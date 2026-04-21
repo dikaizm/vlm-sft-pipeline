@@ -16,9 +16,11 @@ import os
 import shutil
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
 
 KAGGLE_DATASET = "vigneshwar472/ucaucf-crime-annotation-dataset"
-DEFAULT_DEST   = "/Volumes/T7/research-vlm/data"
+DEFAULT_DEST   = os.environ.get("DATA_ROOT", "./data")
 
 EXPECTED_FILES = [
     "UCFCrime_Train.json",
