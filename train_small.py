@@ -1,11 +1,11 @@
 """
 Small SFT pipeline for SmolVLM2-500M on UCF-Crime + UCA dataset.
-Trains on a 200-sample subset to validate the full pipeline end-to-end.
+Trains on a 200-sample subset to validate the full pipeline end-to-end on CUDA.
 
 Logs metrics, hyperparameters, and a training log file to MLflow.
 
 Usage:
-    python vlm_sft_pipeline/train_small.py
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_small.py
 """
 
 import json
@@ -17,9 +17,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import mlflow
 import torch
-import numpy as np
 from PIL import Image
 from datasets import Dataset
 from transformers import (
@@ -35,20 +37,21 @@ from transformers.video_utils import VideoMetadata
 # Config
 # ---------------------------------------------------------------------------
 
-DATA_ROOT    = "/Volumes/T7/research-vlm/data"
+DATA_ROOT    = os.environ["DATA_ROOT"]
 VIDEO_ROOT   = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 TRAIN_JSON   = f"{DATA_ROOT}/UCFCrime_Train.json"
 VAL_JSON     = f"{DATA_ROOT}/UCFCrime_Val.json"
-OUTPUT_DIR   = "./output/smolvlm2-500m-small-sft"
+OUTPUT_DIR   = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-500m-small-sft")
+MODEL_ID     = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 
-MODEL_ID     = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
-NUM_FRAMES   = 4       # 8 → 4 to halve visual token count (MPS memory limit)
+MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
+
+NUM_FRAMES   = 8
 MAX_TRAIN    = 200
 MAX_VAL      = 50
+MAX_LENGTH   = 2048
 SEED         = 42
-
-MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
-MLFLOW_EXPERIMENT = "smolvlm2-surveillance-sft"
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -60,10 +63,8 @@ def setup_logging(log_path: str) -> logging.Logger:
     logger = logging.getLogger("train")
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
-    # file handler
     fh = logging.FileHandler(log_path, mode="w")
     fh.setFormatter(fmt)
-    # stdout handler
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)
     logger.addHandler(fh)
@@ -83,11 +84,7 @@ class MLflowMetricsCallback(TrainerCallback):
         if not logs:
             return
         step = state.global_step
-        metrics = {
-            k: v for k, v in logs.items()
-            if isinstance(v, (int, float))
-        }
-        # Print to our logger so progress is visible in the log file
+        metrics = {k: v for k, v in logs.items() if isinstance(v, (int, float))}
         logging.getLogger("train").info(
             "  ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
                       for k, v in metrics.items())
@@ -96,27 +93,6 @@ class MLflowMetricsCallback(TrainerCallback):
             mlflow.log_metrics(metrics, step=step)
         except Exception as e:
             logging.getLogger("train").warning(f"MLflow log_metrics failed (step {step}): {e}")
-
-
-# ---------------------------------------------------------------------------
-# Device setup
-# ---------------------------------------------------------------------------
-
-def get_device() -> torch.device:
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def get_dtype(device: torch.device) -> torch.dtype:
-    # MPS does not support AMP gradient scaling — train in float32
-    if device.type == "cuda" and torch.cuda.is_bf16_supported():
-        return torch.bfloat16
-    if device.type == "cuda":
-        return torch.float16
-    return torch.float32
 
 
 # ---------------------------------------------------------------------------
@@ -133,12 +109,10 @@ def _load_samples(json_path: str, max_samples: int) -> list[dict]:
 
     items = []
     for video_id, ann in data.items():
-        category  = _category_from_id(video_id)
+        category   = _category_from_id(video_id)
         video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
-
         if not os.path.isfile(video_path):
             continue
-
         for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
             if end <= start:
                 continue
@@ -151,7 +125,7 @@ def _load_samples(json_path: str, max_samples: int) -> list[dict]:
 
     random.seed(SEED)
     random.shuffle(items)
-    return items[:max_samples]
+    return items if max_samples == -1 else items[:max_samples]
 
 
 def build_dataset(json_path: str, max_samples: int, logger) -> Dataset:
@@ -233,7 +207,6 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         frame_lists.append(frames)
         metadatas.append(_make_video_metadata(sample["start"], sample["end"], NUM_FRAMES))
 
-        # Response includes description + timestamps
         response = (
             f"{sample['sentence']} "
             f"Timestamps: [{sample['start']:.1f}, {sample['end']:.1f}]"
@@ -251,7 +224,6 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
             },
             {
                 "role": "assistant",
-                # Must be a list — plain string silently drops the text in SmolVLM2's template
                 "content": [{"type": "text", "text": response}],
             },
         ]
@@ -260,8 +232,6 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         )
         texts.append(text)
 
-    # videos must be wrapped as [[frames], [frames], ...] — one list-of-frames per video
-    # video_metadata: one VideoMetadata per video in the batch
     encoded = processor(
         text=texts,
         videos=[[frames] for frames in frame_lists],
@@ -269,20 +239,18 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=1024,
+        max_length=MAX_LENGTH,
     )
 
     labels = encoded["input_ids"].clone()
 
-    # Mask prompt tokens: only compute loss on assistant response.
-    # SmolVLM2 template: "Assistant: {response}<end_of_utterance>"
     assistant_token = processor.tokenizer.encode("Assistant:", add_special_tokens=False)
     for i, ids in enumerate(labels):
         ids_list  = ids.tolist()
         split_pos = None
         for j in range(len(ids_list) - len(assistant_token), -1, -1):
             if ids_list[j : j + len(assistant_token)] == assistant_token:
-                split_pos = j + len(assistant_token) + 1  # +1 to skip the space
+                split_pos = j + len(assistant_token) + 1
                 break
         if split_pos is not None:
             labels[i, :split_pos] = -100
@@ -300,47 +268,49 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
+    assert torch.cuda.is_available(), (
+        "CUDA not found. train_small.py requires a CUDA GPU (RTX 4090 recommended).\n"
+        "Check your environment: nvidia-smi"
+    )
+
     run_name = f"smolvlm2-500m-small-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     log_file = os.path.join(OUTPUT_DIR, "logs", f"{run_name}.log")
     logger   = setup_logging(log_file)
 
-    logger.info("=== SmolVLM2-500M Small SFT ===")
-    logger.info(f"Model  : {MODEL_ID}")
-    logger.info(f"Train  : {MAX_TRAIN} samples | Val: {MAX_VAL} samples")
-    logger.info(f"Output : {OUTPUT_DIR}")
-    logger.info(f"Log    : {log_file}")
-
-    # --- Device ---
-    device = get_device()
-    dtype  = get_dtype(device)
-    logger.info(f"Device : {device} | dtype: {dtype}")
+    logger.info("=== SmolVLM2-500M Small SFT (CUDA) ===")
+    logger.info(f"Model      : {MODEL_ID}")
+    logger.info(f"Train      : {MAX_TRAIN} samples | Val: {MAX_VAL} samples")
+    logger.info(f"Frames     : {NUM_FRAMES} | Max length: {MAX_LENGTH}")
+    logger.info(f"Output     : {OUTPUT_DIR}")
+    logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
+    logger.info(f"VRAM       : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     # --- MLflow ---
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
     hparams = {
-        "model_id":           MODEL_ID,
-        "num_frames":         NUM_FRAMES,
-        "max_train_samples":  MAX_TRAIN,
-        "num_epochs":         10,
-        "learning_rate":      2e-5,
-        "batch_size":         1,
+        "model_id":                    MODEL_ID,
+        "num_frames":                  NUM_FRAMES,
+        "max_train_samples":           MAX_TRAIN,
+        "num_epochs":                  10,
+        "learning_rate":               2e-5,
+        "batch_size":                  1,
         "gradient_accumulation_steps": 4,
-        "effective_batch_size": 4,
-        "max_length":         1024,
-        "lr_scheduler":       "cosine",
-        "warmup_steps":       20,
-        "device":             str(device),
-        "dtype":              str(dtype),
-        "task":               "captioning+temporal_grounding",
-        "seed":               SEED,
+        "effective_batch_size":        4,
+        "max_length":                  MAX_LENGTH,
+        "lr_scheduler":                "cosine",
+        "warmup_steps":                20,
+        "optimizer":                   "adamw_bnb_8bit",
+        "precision":                   "bf16",
+        "device":                      torch.cuda.get_device_name(0),
+        "task":                        "captioning+temporal_grounding",
+        "seed":                        SEED,
     }
 
     run = mlflow.start_run(run_name=run_name)
     try:
         logger.info(f"MLflow run: {run.info.run_id}  ({MLFLOW_URI})")
-
         try:
             mlflow.log_params(hparams)
         except Exception as e:
@@ -349,10 +319,15 @@ def main():
         # --- Model & processor ---
         logger.info("Loading model and processor...")
         processor = AutoProcessor.from_pretrained(MODEL_ID)
-        model     = AutoModelForImageTextToText.from_pretrained(MODEL_ID, torch_dtype=dtype)
-        model     = model.to(device)
-        model.gradient_checkpointing_enable()
-        logger.info(f"Params : {sum(p.numel() for p in model.parameters()) / 1e6:.0f}M")
+        model = AutoModelForImageTextToText.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        logger.info(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.0f}M")
 
         # --- Dataset ---
         logger.info("Building datasets...")
@@ -370,14 +345,16 @@ def main():
             learning_rate=2e-5,
             lr_scheduler_type="cosine",
             warmup_steps=20,
-            bf16=(device.type == "cuda" and torch.cuda.is_bf16_supported()),
-            fp16=(device.type == "cuda" and not torch.cuda.is_bf16_supported()),
-            logging_steps=1,
+            optim="adamw_bnb_8bit",
+            bf16=True,
+            max_grad_norm=1.0,
+            logging_steps=5,
             save_steps=50,
-            eval_strategy="no",       # eval OOMs on MPS without grad checkpointing
+            eval_strategy="steps",
+            eval_steps=50,
             remove_unused_columns=False,
-            dataloader_num_workers=0,
-            report_to="none",         # metrics logged via MLflowMetricsCallback instead
+            dataloader_num_workers=2,
+            report_to="none",
         )
 
         collator = functools.partial(collate_fn, processor=processor, model=model)
@@ -386,6 +363,7 @@ def main():
             model=model,
             args=training_args,
             train_dataset=train_ds,
+            eval_dataset=val_ds,
             data_collator=collator,
             callbacks=[MLflowMetricsCallback()],
         )
@@ -394,7 +372,6 @@ def main():
         logger.info("Starting training...")
         train_result = trainer.train()
 
-        # Log final summary metrics
         try:
             mlflow.log_metrics({
                 "train_loss":               train_result.training_loss,
@@ -412,18 +389,19 @@ def main():
         trainer.save_model(OUTPUT_DIR)
         processor.save_pretrained(OUTPUT_DIR)
 
-        # --- Upload log file as artifact ---
         try:
             mlflow.log_artifact(log_file, artifact_path="logs")
         except Exception as e:
             logger.warning(f"MLflow log_artifact failed: {e}")
+
         logger.info(f"Done. Checkpoint: {OUTPUT_DIR}")
         logger.info(f"MLflow run URL: {MLFLOW_URI}#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
+
     finally:
         try:
             mlflow.end_run()
         except Exception as e:
-            logger.warning(f"MLflow end_run failed (run already complete): {e}")
+            logger.warning(f"MLflow end_run failed: {e}")
 
 
 if __name__ == "__main__":

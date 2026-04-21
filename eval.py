@@ -2,9 +2,10 @@
 Formal evaluation of SmolVLM2 on the UCF-Crime test set.
 
 Metrics computed per sample:
-  - tIoU   : Temporal Intersection over Union
-  - ROUGE-L : Longest common subsequence recall/precision/F1
-  - BLEU-4  : 4-gram BLEU via sacrebleu
+  - tIoU      : Temporal Intersection over Union
+  - ROUGE-L   : Longest common subsequence recall/precision/F1
+  - BLEU-4    : 4-gram BLEU via sacrebleu
+  - BERTScore : Semantic similarity F1 via roberta-large (batched after inference)
 
 Aggregated results are written to a JSON file and printed as a summary table.
 
@@ -30,6 +31,7 @@ from transformers.video_utils import VideoMetadata
 
 from rouge_score import rouge_scorer as rouge_lib
 import sacrebleu
+from bert_score import score as bert_score_fn
 
 # ---------------------------------------------------------------------------
 # Config
@@ -264,9 +266,9 @@ def main():
 
     results = []
     tiou_scores, rouge_scores, bleu_scores = [], [], []
+    pred_descs, ref_descs = [], []
     timestamp_found = 0
 
-    sep = "-" * 72
     for i, s in enumerate(samples, 1):
         print(f"[{i:>4}/{len(samples)}] {s['video_id']}  "
               f"GT=[{s['start']:.1f}, {s['end']:.1f}]", end="  ", flush=True)
@@ -290,6 +292,8 @@ def main():
         b4 = bleu4(pred_desc, s["gt"])
         rouge_scores.append(rl)
         bleu_scores.append(b4)
+        pred_descs.append(pred_desc)
+        ref_descs.append(s["gt"])
 
         print(f"tIoU={ts_iou:.3f}  ROUGE-L={rl:.3f}  BLEU-4={b4:.3f}")
 
@@ -306,14 +310,25 @@ def main():
             "bleu4":      b4,
         })
 
+    # --- BERTScore (batched for efficiency) ---
+    print("\nComputing BERTScore (batched)...")
+    _, _, bert_f1 = bert_score_fn(
+        pred_descs, ref_descs,
+        lang="en", model_type="roberta-large", verbose=False
+    )
+    bert_scores = bert_f1.tolist()
+    for r, bs in zip(results, bert_scores):
+        r["bertscore_f1"] = bs
+
     # --- Aggregate ---
     n = len(samples)
-    mean_tiou  = sum(tiou_scores) / n
-    mean_rouge = sum(rouge_scores) / n
-    mean_bleu  = sum(bleu_scores) / n
-    ts_rate    = timestamp_found / n
+    mean_tiou   = sum(tiou_scores) / n
+    mean_rouge  = sum(rouge_scores) / n
+    mean_bleu   = sum(bleu_scores) / n
+    mean_bert   = sum(bert_scores) / n
+    ts_rate     = timestamp_found / n
 
-    # tIoU@0.3 and tIoU@0.5 recall
+    # tIoU recall at thresholds
     tiou_03 = sum(1 for v in tiou_scores if v >= 0.3) / n
     tiou_05 = sum(1 for v in tiou_scores if v >= 0.5) / n
     tiou_07 = sum(1 for v in tiou_scores if v >= 0.7) / n
@@ -327,19 +342,21 @@ def main():
     print(f"  tIoU@0.7          : {tiou_07:.4f}")
     print(f"  Mean ROUGE-L      : {mean_rouge:.4f}")
     print(f"  Mean BLEU-4       : {mean_bleu:.4f}")
+    print(f"  Mean BERTScore F1 : {mean_bert:.4f}")
     print(f"{'='*72}\n")
 
     summary = {
-        "model":           args.model,
-        "n_samples":       n,
-        "timestamp_rate":  ts_rate,
-        "mean_tiou":       mean_tiou,
-        "tiou_at_0.3":     tiou_03,
-        "tiou_at_0.5":     tiou_05,
-        "tiou_at_0.7":     tiou_07,
-        "mean_rouge_l":    mean_rouge,
-        "mean_bleu4":      mean_bleu,
-        "per_sample":      results,
+        "model":              args.model,
+        "n_samples":          n,
+        "timestamp_rate":     ts_rate,
+        "mean_tiou":          mean_tiou,
+        "tiou_at_0.3":        tiou_03,
+        "tiou_at_0.5":        tiou_05,
+        "tiou_at_0.7":        tiou_07,
+        "mean_rouge_l":       mean_rouge,
+        "mean_bleu4":         mean_bleu,
+        "mean_bertscore_f1":  mean_bert,
+        "per_sample":         results,
     }
 
     out_path = args.out or f"eval_results_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
