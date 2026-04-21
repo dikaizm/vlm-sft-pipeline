@@ -1,11 +1,14 @@
 """
-Inference comparison: zero-shot vs fine-tuned SmolVLM2-500M on UCF-Crime clips.
+Inference comparison: zero-shot vs fine-tuned SmolVLM2 on UCF-Crime clips.
 
-Samples N clips from the test set, runs both models, prints results side-by-side.
+Samples N clips from the test set, runs both models, prints results side-by-side,
+and saves per-clip predictions to a JSON file under OUTPUT_DIR/results/.
+Metrics are optionally logged to MLflow.
 
 Usage:
-    python vlm_sft_pipeline/infer.py
-    python vlm_sft_pipeline/infer.py --n 10 --finetuned ./output/smolvlm2-500m-small-sft
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/infer.py
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/infer.py --n 10 --finetuned ./output/smolvlm2-500m-small-sft
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/infer.py --no-zeroshot --output results/my_run.json
 """
 
 import argparse
@@ -14,6 +17,11 @@ import os
 import random
 import re
 import sys
+from datetime import datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import torch
 from PIL import Image
@@ -21,17 +29,22 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 from transformers.video_utils import VideoMetadata
 
 # ---------------------------------------------------------------------------
-# Config
+# Config  (all overridable via .env or CLI flags)
 # ---------------------------------------------------------------------------
 
-DATA_ROOT  = "/Volumes/T7/research-vlm/data"
-VIDEO_ROOT = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-TEST_JSON  = f"{DATA_ROOT}/UCFCrime_Test.json"
+DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
+VIDEO_ROOT    = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
+TEST_JSON     = f"{DATA_ROOT}/UCFCrime_Test.json"
 
-MODEL_ID      = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
-FINETUNED_DIR = "./output/smolvlm2-500m-small-sft"
-NUM_FRAMES    = 4
-SEED          = 99   # different from training seed
+MODEL_ID      = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-500m-small-sft")
+OUTPUT_DIR    = os.environ.get("OUTPUT_DIR",    "./output/smolvlm2-500m-small-sft")
+
+MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
+
+NUM_FRAMES     = 4
+SEED           = 99   # different from training seed
 MAX_NEW_TOKENS = 128
 
 PROMPT = (
@@ -119,7 +132,6 @@ def extract_frames(video_path: str, start: float, end: float, n_frames: int) -> 
 
 
 def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetadata:
-    """Build VideoMetadata with absolute frame timestamps (fps=1, integer seconds)."""
     frame_timestamps = [
         start + i * (end - start) / max(n_frames - 1, 1)
         for i in range(n_frames)
@@ -163,7 +175,6 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
             do_sample=False,
         )
 
-    # Decode only the newly generated tokens
     new_tokens = out_ids[:, inputs["input_ids"].shape[1]:]
     return processor.tokenizer.decode(new_tokens[0], skip_special_tokens=True).strip()
 
@@ -174,20 +185,52 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n",          type=int, default=5,            help="Number of test clips")
-    parser.add_argument("--finetuned",  default=FINETUNED_DIR,          help="Fine-tuned model dir")
-    parser.add_argument("--no-zeroshot", action="store_true",           help="Skip zero-shot model")
+    parser.add_argument("--n",           type=int, default=5,            help="Number of test clips")
+    parser.add_argument("--finetuned",   default=FINETUNED_DIR,          help="Fine-tuned model dir")
+    parser.add_argument("--no-zeroshot", action="store_true",            help="Skip zero-shot model")
+    parser.add_argument("--output",      default=None,                   help="Path to save JSON results (default: OUTPUT_DIR/results/<run>.json)")
+    parser.add_argument("--no-mlflow",   action="store_true",            help="Disable MLflow logging")
     args = parser.parse_args()
 
     device = get_device()
     dtype  = torch.float32 if device.type == "mps" else torch.bfloat16
     print(f"Device: {device}  dtype: {dtype}\n")
 
+    run_name = f"infer-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    # Resolve output path
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = Path(OUTPUT_DIR) / "results" / f"{run_name}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- MLflow ---
+    mlflow_run = None
+    if not args.no_mlflow:
+        try:
+            import mlflow
+            mlflow.set_tracking_uri(MLFLOW_URI)
+            mlflow.set_experiment(MLFLOW_EXPERIMENT)
+            mlflow_run = mlflow.start_run(run_name=run_name, tags={"type": "inference"})
+            mlflow.log_params({
+                "model_id":      MODEL_ID,
+                "finetuned_dir": args.finetuned,
+                "n_clips":       args.n,
+                "num_frames":    NUM_FRAMES,
+                "zero_shot":     not args.no_zeroshot,
+                "device":        str(device),
+            })
+            print(f"MLflow run: {mlflow_run.info.run_id}")
+        except Exception as e:
+            print(f"[WARN] MLflow init failed: {e}")
+            mlflow_run = None
+
     # --- Load fine-tuned model ---
     print(f"Loading fine-tuned model from {args.finetuned} ...")
     ft_processor = AutoProcessor.from_pretrained(args.finetuned)
     ft_model     = AutoModelForImageTextToText.from_pretrained(
-        args.finetuned, dtype=dtype
+        args.finetuned, torch_dtype=dtype
     ).to(device)
     ft_model.eval()
     print(f"  Params: {sum(p.numel() for p in ft_model.parameters())/1e6:.0f}M")
@@ -198,7 +241,7 @@ def main():
         print(f"\nLoading zero-shot model ({MODEL_ID}) ...")
         zs_processor = AutoProcessor.from_pretrained(MODEL_ID)
         zs_model     = AutoModelForImageTextToText.from_pretrained(
-            MODEL_ID, dtype=dtype
+            MODEL_ID, torch_dtype=dtype
         ).to(device)
         zs_model.eval()
 
@@ -211,6 +254,7 @@ def main():
 
     # --- Run inference ---
     sep = "=" * 72
+    clip_results = []
 
     for i, s in enumerate(samples, 1):
         print(sep)
@@ -220,16 +264,55 @@ def main():
 
         frames = extract_frames(s["video_path"], s["start"], s["end"], NUM_FRAMES)
 
+        record = {
+            "video_id":  s["video_id"],
+            "start":     s["start"],
+            "end":       s["end"],
+            "gt":        s["gt"],
+        }
+
         if zs_model is not None:
             zs_out = run_inference(zs_model, zs_processor, device, frames, s["start"], s["end"], PROMPT)
             print(f"  ZeroShot : {zs_out}")
+            record["zeroshot"] = zs_out
 
         ft_out = run_inference(ft_model, ft_processor, device, frames, s["start"], s["end"], PROMPT)
         print(f"  FineTuned: {ft_out}")
+        record["finetuned"] = ft_out
+
+        clip_results.append(record)
         print()
 
     print(sep)
     print("Done.")
+
+    # --- Save results to JSON ---
+    output = {
+        "run_name":     run_name,
+        "finetuned_dir": args.finetuned,
+        "model_id":     MODEL_ID,
+        "n_clips":      len(clip_results),
+        "num_frames":   NUM_FRAMES,
+        "device":       str(device),
+        "clips":        clip_results,
+    }
+    with open(out_path, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\nResults saved to: {out_path}")
+
+    # --- Log output path to MLflow ---
+    if mlflow_run is not None:
+        try:
+            mlflow.log_artifact(str(out_path), artifact_path="results")
+            mlflow.log_metric("n_clips_inferred", len(clip_results))
+            mlflow.end_run()
+            print(f"MLflow artifact logged.")
+        except Exception as e:
+            print(f"[WARN] MLflow artifact log failed: {e}")
+            try:
+                mlflow.end_run()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
