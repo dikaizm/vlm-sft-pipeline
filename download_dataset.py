@@ -31,9 +31,10 @@ EXPECTED_FILES = [
 
 
 def download(dest: str) -> None:
-    try:
-        from kaggle.api.kaggle_api_extended import KaggleApiExtended
-    except ImportError:
+    import shutil
+    import subprocess
+
+    if not shutil.which("kaggle"):
         raise SystemExit("kaggle not installed. Run: pip install kaggle")
 
     print(f"Downloading dataset: {KAGGLE_DATASET}")
@@ -42,9 +43,10 @@ def download(dest: str) -> None:
     dest_path = Path(dest)
     dest_path.mkdir(parents=True, exist_ok=True)
 
-    api = KaggleApiExtended()
-    api.authenticate()
-    api.dataset_download_files(KAGGLE_DATASET, path=str(dest_path), unzip=True)
+    subprocess.run(
+        ["kaggle", "datasets", "download", "-d", KAGGLE_DATASET, "-p", str(dest_path), "--unzip"],
+        check=True,
+    )
 
     print(f"\nDownloaded to: {dest_path}\n")
 
