@@ -1,13 +1,15 @@
 """
 Download the UCA (UCF-Crime Annotation) dataset from Kaggle.
 
-The Kaggle dataset contains the annotation JSON files (Train/Val/Test splits)
-with dense temporal descriptions. Videos (~98 GB) must be provided separately
-— see README for the UCF-Crime video download link.
+The dataset contains annotation JSON files (Train/Val/Test splits) with dense
+temporal descriptions. Videos (~98 GB) must be provided separately — see README
+for the UCF-Crime video download link.
 
 Usage:
-    python vlm_sft_pipeline/download_dataset.py
-    python vlm_sft_pipeline/download_dataset.py --dest /Volumes/T7/research-vlm/data
+    python vlm-sft-pipeline/download_dataset.py
+    python vlm-sft-pipeline/download_dataset.py --dest /Volumes/T7/research-vlm/data
+
+Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json.
 """
 
 import argparse
@@ -30,9 +32,9 @@ EXPECTED_FILES = [
 
 def download(dest: str) -> None:
     try:
-        import kagglehub
+        from kaggle.api.kaggle_api_extended import KaggleApiExtended
     except ImportError:
-        raise SystemExit("kagglehub not installed. Run: pip install kagglehub")
+        raise SystemExit("kaggle not installed. Run: pip install kaggle")
 
     print(f"Downloading dataset: {KAGGLE_DATASET}")
     print("(Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json)\n")
@@ -40,22 +42,20 @@ def download(dest: str) -> None:
     dest_path = Path(dest)
     dest_path.mkdir(parents=True, exist_ok=True)
 
-    download_path = kagglehub.dataset_download(KAGGLE_DATASET, path=str(dest_path))
-    print(f"Downloaded to: {download_path}\n")
+    api = KaggleApiExtended()
+    api.authenticate()
+    api.dataset_download_files(KAGGLE_DATASET, path=str(dest_path), unzip=True)
 
-    # Inspect what was downloaded
-    downloaded = []
-    for root, _, files in os.walk(download_path):
-        for f in files:
-            full = os.path.join(root, f)
+    print(f"\nDownloaded to: {dest_path}\n")
+
+    for root, _, files in os.walk(dest_path):
+        for f in sorted(files):
+            full    = os.path.join(root, f)
             size_kb = os.path.getsize(full) / 1024
-            downloaded.append((os.path.relpath(full, download_path), size_kb))
+            rel     = os.path.relpath(full, dest_path)
+            print(f"  {rel:<45} {size_kb:>8.1f} KB")
 
-    print("Contents:")
-    for rel_path, size_kb in sorted(downloaded):
-        print(f"  {rel_path:<45} {size_kb:>8.1f} KB")
-
-    _verify(Path(download_path))
+    _verify(dest_path)
 
 
 def _verify(dest_path: Path) -> None:
@@ -74,7 +74,7 @@ def _verify(dest_path: Path) -> None:
     if all_ok:
         print("\nAll annotation files present. Dataset ready for training.")
         print(f"Data directory: {dest_path}")
-        print(f"\nNOTE: UCF-Crime videos (~98 GB) are NOT included in this Kaggle dataset.")
+        print(f"\nNOTE: UCF-Crime videos (~98 GB) are NOT included in this dataset.")
         print(f"      Videos should be placed at:")
         print(f"      {dest_path}/UCF_Crimes/UCF_Crimes/Videos/{{Category}}/{{video}}.mp4")
     else:
@@ -86,7 +86,7 @@ def main() -> None:
     parser.add_argument(
         "--dest",
         default=DEFAULT_DEST,
-        help=f"Destination directory for annotation files (default: {DEFAULT_DEST})",
+        help=f"Destination directory (default: {DEFAULT_DEST})",
     )
     args = parser.parse_args()
     download(args.dest)
