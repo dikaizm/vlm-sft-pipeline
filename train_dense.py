@@ -246,7 +246,7 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 # Collate function — dense multi-activity response
 # ---------------------------------------------------------------------------
 
-def collate_fn_dense(batch: list[dict], processor, model) -> dict:
+def collate_fn_dense(batch: list[dict], processor) -> dict:
     texts       = []
     frame_lists = []
     metadatas   = []
@@ -314,7 +314,7 @@ def collate_fn_dense(batch: list[dict], processor, model) -> dict:
     labels[labels == processor.tokenizer.pad_token_id] = -100
     encoded["labels"] = labels
 
-    return {k: v.to(model.device) for k, v in encoded.items()}
+    return dict(encoded)
 
 
 # ---------------------------------------------------------------------------
@@ -410,11 +410,11 @@ def main():
             eval_strategy="steps",
             eval_steps=100,
             remove_unused_columns=False,
-            dataloader_num_workers=2,
+            dataloader_num_workers=0,
             report_to="none",
         )
 
-        collator = functools.partial(collate_fn_dense, processor=processor, model=model)
+        collator = functools.partial(collate_fn_dense, processor=processor)
 
         trainer = Trainer(
             model=model,
