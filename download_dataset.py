@@ -39,21 +39,37 @@ EXPECTED_COUNTS = {
 
 def download(dest: str) -> None:
     import shutil
-    import subprocess
 
-    if not shutil.which("kaggle"):
-        raise SystemExit("kaggle not installed. Run: pip install kaggle")
+    try:
+        import kagglehub
+    except ImportError:
+        raise SystemExit("kagglehub not installed. Run: pip install kagglehub")
 
     print(f"Downloading dataset: {KAGGLE_DATASET}")
     print("(Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json)\n")
 
+    cache_path = kagglehub.dataset_download(KAGGLE_DATASET)
+    print(f"Downloaded to cache: {cache_path}\n")
+
     dest_path = Path(dest)
     dest_path.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
-        ["kaggle", "datasets", "download", "-d", KAGGLE_DATASET, "-p", str(dest_path), "--unzip"],
-        check=True,
-    )
+    # Copy annotation files from cache to dest
+    copied = []
+    for root, _, files in os.walk(cache_path):
+        for f in files:
+            if f.endswith(".json") or f.endswith(".txt"):
+                src = os.path.join(root, f)
+                dst = dest_path / f
+                shutil.copy2(src, dst)
+                copied.append(f)
+
+    if copied:
+        print(f"Copied {len(copied)} file(s) to {dest_path}:")
+        for f in copied:
+            print(f"  {f}")
+    else:
+        print(f"[WARN] No annotation files found in cache: {cache_path}")
 
     print(f"\nDownloaded to: {dest_path}\n")
 
