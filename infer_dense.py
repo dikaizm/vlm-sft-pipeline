@@ -380,10 +380,14 @@ def main():
             mlflow_run = None
 
     # --- Load model ---
-    print(f"Loading model from {args.finetuned} ...")
-    processor = AutoProcessor.from_pretrained(args.finetuned)
+    finetuned_available = args.finetuned and os.path.isdir(args.finetuned)
+    model_source = args.finetuned if finetuned_available else MODEL_ID
+    print(f"Loading model from {model_source} ...")
+    if not finetuned_available:
+        print(f"  [INFO] Fine-tuned dir not found ({args.finetuned}), using base model (zero-shot)")
+    processor = AutoProcessor.from_pretrained(model_source)
     model     = AutoModelForImageTextToText.from_pretrained(
-        args.finetuned, torch_dtype=dtype
+        model_source, torch_dtype=dtype
     ).to(device)
     model.eval()
     print(f"  Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M\n")
