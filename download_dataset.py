@@ -1,13 +1,13 @@
 """
 Download the UCA (UCF-Crime Annotation) dataset from Kaggle.
 
-The dataset contains annotation JSON files (Train/Val/Test splits) with dense
-temporal descriptions. Videos (~98 GB) must be provided separately — see README
-for the UCF-Crime video download link.
+The dataset contains annotation JSON files (Train/Val/Test splits) and the
+UCF-Crime videos (~98 GB). Full dataset is ~105 GB — dest needs ~210 GB free
+during extraction (zip + extracted files). The zip is deleted after extraction.
 
 Usage:
     python vlm-sft-pipeline/download_dataset.py
-    python vlm-sft-pipeline/download_dataset.py --dest /Volumes/T7/research-vlm/data
+    python vlm-sft-pipeline/download_dataset.py --dest /data
 
 Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json.
 """
@@ -15,6 +15,8 @@ Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json.
 import argparse
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,7 +31,6 @@ EXPECTED_FILES = [
     "UCFCrime_Test.json",
 ]
 
-# Ground-truth counts from the UCA dataset
 EXPECTED_COUNTS = {
     "UCFCrime_Train.json": {"videos": 1165, "annotations": 15677},
     "UCFCrime_Val.json":   {"videos": 379,  "annotations": 3534},
@@ -38,9 +39,6 @@ EXPECTED_COUNTS = {
 
 
 def download(dest: str) -> None:
-    import shutil
-    import subprocess
-
     if not shutil.which("kaggle"):
         raise SystemExit("kaggle not installed. Run: pip install kaggle")
 
@@ -49,7 +47,7 @@ def download(dest: str) -> None:
 
     print(f"Downloading dataset: {KAGGLE_DATASET}")
     print(f"Destination: {dest_path}")
-    print("(Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json)\n")
+    print("(Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json)")
     print("NOTE: Full dataset is ~105 GB. Dest needs ~210 GB free during extraction.\n")
 
     subprocess.run(
@@ -62,17 +60,14 @@ def download(dest: str) -> None:
         check=True,
     )
 
-    print(f"\nDownloaded and extracted to: {dest_path}")
+    # Delete the zip left behind by kaggle CLI
+    zip_file = dest_path / "ucaucf-crime-annotation-dataset.zip"
+    if zip_file.exists():
+        print(f"\nRemoving zip: {zip_file} ({zip_file.stat().st_size / 1e9:.1f} GB)...")
+        zip_file.unlink()
+        print("Zip removed.")
 
-    print(f"\nDownloaded to: {dest_path}\n")
-
-    for root, _, files in os.walk(dest_path):
-        for f in sorted(files):
-            full    = os.path.join(root, f)
-            size_kb = os.path.getsize(full) / 1024
-            rel     = os.path.relpath(full, dest_path)
-            print(f"  {rel:<45} {size_kb:>8.1f} KB")
-
+    print(f"\nExtracted to: {dest_path}")
     _verify(dest_path)
 
 
@@ -91,9 +86,9 @@ def _verify(dest_path: Path) -> None:
             data = json.load(f)
 
         exp = EXPECTED_COUNTS[fname]
-        n_videos = len(data)
+        n_videos      = len(data)
         n_annotations = 0
-        issues = []
+        issues        = []
 
         for vid, ann in data.items():
             if not all(k in ann for k in ("duration", "timestamps", "sentences")):
@@ -124,18 +119,25 @@ def _verify(dest_path: Path) -> None:
         if not (video_ok and ann_ok):
             all_ok = False
 
+    # Check videos directory
+    video_dir = dest_path / "UCF_Crimes" / "UCF_Crimes" / "Videos"
+    if video_dir.exists():
+        categories = [d for d in video_dir.iterdir() if d.is_dir()]
+        n_videos   = sum(len(list(c.glob("*.mp4"))) for c in categories)
+        print(f"\n  Videos: {n_videos} mp4 files across {len(categories)} categories")
+        print(f"  Path: {video_dir}")
+    else:
+        print(f"\n  [MISSING] Videos directory: {video_dir}")
+        all_ok = False
+
     if all_ok:
         print("\nDataset complete and valid. Ready for training.")
-        print(f"Data directory: {dest_path}")
-        print(f"\nNOTE: UCF-Crime videos (~98 GB) are NOT included in this dataset.")
-        print(f"      Videos should be placed at:")
-        print(f"      {dest_path}/UCF_Crimes/UCF_Crimes/Videos/{{Category}}/{{video}}.mp4")
     else:
         print("\nVerification failed. Re-download or check the dataset.")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Download UCA annotations from Kaggle")
+    parser = argparse.ArgumentParser(description="Download UCA dataset from Kaggle")
     parser.add_argument(
         "--dest",
         default=DEFAULT_DEST,
