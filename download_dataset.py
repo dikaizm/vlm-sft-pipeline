@@ -13,7 +13,6 @@ Usage:
 import argparse
 import json
 import os
-import shutil
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,43 +37,25 @@ def download(dest: str) -> None:
     print(f"Downloading dataset: {KAGGLE_DATASET}")
     print("(Requires KAGGLE_USERNAME and KAGGLE_KEY env vars, or ~/.kaggle/kaggle.json)\n")
 
-    cache_path = kagglehub.dataset_download(KAGGLE_DATASET)
-    print(f"Downloaded to cache: {cache_path}\n")
+    dest_path = Path(dest)
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    download_path = kagglehub.dataset_download(KAGGLE_DATASET, path=str(dest_path))
+    print(f"Downloaded to: {download_path}\n")
 
     # Inspect what was downloaded
     downloaded = []
-    for root, _, files in os.walk(cache_path):
+    for root, _, files in os.walk(download_path):
         for f in files:
             full = os.path.join(root, f)
             size_kb = os.path.getsize(full) / 1024
-            downloaded.append((os.path.relpath(full, cache_path), size_kb))
+            downloaded.append((os.path.relpath(full, download_path), size_kb))
 
     print("Contents:")
     for rel_path, size_kb in sorted(downloaded):
         print(f"  {rel_path:<45} {size_kb:>8.1f} KB")
 
-    # Copy JSON annotation files to dest
-    dest_path = Path(dest)
-    dest_path.mkdir(parents=True, exist_ok=True)
-
-    copied = []
-    for root, _, files in os.walk(cache_path):
-        for f in files:
-            if f.endswith(".json") or f.endswith(".txt"):
-                src = os.path.join(root, f)
-                dst = dest_path / f
-                shutil.copy2(src, dst)
-                copied.append(f)
-
-    if copied:
-        print(f"\nCopied {len(copied)} annotation file(s) to {dest_path}:")
-        for f in copied:
-            print(f"  {f}")
-    else:
-        print(f"\n[WARN] No annotation files found in downloaded dataset.")
-        print(f"       Raw cache is at: {cache_path}")
-
-    _verify(dest_path)
+    _verify(Path(download_path))
 
 
 def _verify(dest_path: Path) -> None:
