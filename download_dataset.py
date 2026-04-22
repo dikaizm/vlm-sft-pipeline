@@ -29,6 +29,13 @@ EXPECTED_FILES = [
     "UCFCrime_Test.json",
 ]
 
+# Ground-truth counts from the UCA dataset
+EXPECTED_COUNTS = {
+    "UCFCrime_Train.json": {"videos": 1165, "annotations": 15677},
+    "UCFCrime_Val.json":   {"videos": 379,  "annotations": 3534},
+    "UCFCrime_Test.json":  {"videos": 310,  "annotations": 4331},
+}
+
 
 def download(dest: str) -> None:
     import shutil
@@ -63,24 +70,59 @@ def download(dest: str) -> None:
 def _verify(dest_path: Path) -> None:
     print("\n--- Verification ---")
     all_ok = True
+
     for fname in EXPECTED_FILES:
         fpath = dest_path / fname
-        if fpath.exists():
-            with open(fpath) as f:
-                data = json.load(f)
-            print(f"  [OK] {fname}  ({len(data)} entries)")
-        else:
+        if not fpath.exists():
             print(f"  [MISSING] {fname}")
+            all_ok = False
+            continue
+
+        with open(fpath) as f:
+            data = json.load(f)
+
+        exp = EXPECTED_COUNTS[fname]
+        n_videos = len(data)
+        n_annotations = 0
+        issues = []
+
+        for vid, ann in data.items():
+            if not all(k in ann for k in ("duration", "timestamps", "sentences")):
+                issues.append(f"{vid}: missing required fields")
+                continue
+            ts, sents = ann["timestamps"], ann["sentences"]
+            if len(ts) != len(sents):
+                issues.append(f"{vid}: timestamps/sentences length mismatch")
+            n_annotations += len(ts)
+            for s, e in ts:
+                if float(s) >= float(e) or float(s) < 0:
+                    issues.append(f"{vid}: invalid timestamp [{s}, {e}]")
+
+        video_ok = n_videos == exp["videos"]
+        ann_ok   = n_annotations == exp["annotations"]
+        status   = "[OK]" if (video_ok and ann_ok and not issues) else "[WARN]"
+
+        print(f"  {status} {fname}")
+        print(f"         videos: {n_videos} (expected {exp['videos']}) {'✓' if video_ok else '✗'}")
+        print(f"         annotations: {n_annotations} (expected {exp['annotations']}) {'✓' if ann_ok else '✗'}")
+        if issues:
+            print(f"         issues: {len(issues)}")
+            for msg in issues[:5]:
+                print(f"           - {msg}")
+            if len(issues) > 5:
+                print(f"           ... and {len(issues) - 5} more")
+            all_ok = False
+        if not (video_ok and ann_ok):
             all_ok = False
 
     if all_ok:
-        print("\nAll annotation files present. Dataset ready for training.")
+        print("\nDataset complete and valid. Ready for training.")
         print(f"Data directory: {dest_path}")
         print(f"\nNOTE: UCF-Crime videos (~98 GB) are NOT included in this dataset.")
         print(f"      Videos should be placed at:")
         print(f"      {dest_path}/UCF_Crimes/UCF_Crimes/Videos/{{Category}}/{{video}}.mp4")
     else:
-        print("\nSome files are missing. Check the Kaggle dataset contents.")
+        print("\nVerification failed. Re-download or check the dataset.")
 
 
 def main() -> None:
