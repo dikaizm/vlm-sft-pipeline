@@ -57,8 +57,8 @@ MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-d
 
 NUM_FRAMES      = 16
 MAX_LENGTH      = 4096
-MAX_TRAIN       = 200      # videos (not clips); each has ~13 annotations
-MAX_VAL         = 50
+MAX_TRAIN       = 10      # videos (not clips); each has ~13 annotations
+MAX_VAL         = 5
 MAX_DURATION    = 120.0    # seconds — cap video length for VRAM
 MAX_ANNOTATIONS = 12       # cap annotations per video
 SEED            = 42
