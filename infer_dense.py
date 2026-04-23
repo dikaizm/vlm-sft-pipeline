@@ -439,13 +439,17 @@ def main():
             print(f"  GT activities: {len(s['gt'])}")
 
             if args.sliding_window:
-                activities, _ = infer_sliding_window(model, processor, device, s["video_path"])
+                activities, windows = infer_sliding_window(model, processor, device, s["video_path"])
+                raw_output = None
             else:
-                activities, _ = infer_single_pass(model, processor, device, s["video_path"])
+                activities, raw_output = infer_single_pass(model, processor, device, s["video_path"])
+                windows = []
 
             print(f"  Predicted:     {len(activities)} activities")
             for a in activities:
                 print(f"    [{a['start']:.1f}, {a['end']:.1f}] {a['description']}")
+            if raw_output is not None:
+                print(f"  Raw output:    {raw_output[:200]!r}{'...' if len(raw_output) > 200 else ''}")
             print()
 
             video_results.append({
@@ -453,6 +457,7 @@ def main():
                 "duration":   s["duration"],
                 "gt":         s["gt"],
                 "predicted":  activities,
+                "raw_output": raw_output,
                 "mode":       "sliding_window" if args.sliding_window else "single_pass",
             })
 
