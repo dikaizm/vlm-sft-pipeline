@@ -57,8 +57,8 @@ MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-d
 
 NUM_FRAMES      = 16
 MAX_LENGTH      = 4096
-MAX_TRAIN       = 200      # videos (not clips); each has ~13 annotations
-MAX_VAL         = 50
+MAX_TRAIN       = -1      # videos (not clips); each has ~13 annotations
+MAX_VAL         = 379
 MAX_DURATION    = 120.0    # seconds — cap video length for VRAM
 MAX_ANNOTATIONS = 12       # cap annotations per video
 SEED            = 42
@@ -97,14 +97,20 @@ class MLflowMetricsCallback(TrainerCallback):
             return
         step = state.global_step
         metrics = {k: v for k, v in logs.items() if isinstance(v, (int, float))}
-        logging.getLogger("train_dense").info(
-            "  ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
-                      for k, v in metrics.items())
+        # Get LR from optimizer param groups (always accurate)
+        trainer = kwargs.get("trainer")
+        if trainer is not None and hasattr(trainer.optimizer, "param_groups"):
+            lr = trainer.optimizer.param_groups[0]["lr"]
+            metrics["learning_rate"] = lr
+        logger = logging.getLogger("train_dense")
+        logger.info(
+            "  ".join(f"{k}={v:.6f}" if isinstance(v, float) else f"{k}={v}"
+                      for k, v in sorted(metrics.items()))
         )
         try:
             mlflow.log_metrics(metrics, step=step)
         except Exception as e:
-            logging.getLogger("train_dense").warning(f"MLflow log_metrics failed (step {step}): {e}")
+            logger.warning(f"MLflow log_metrics failed (step {step}): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +137,24 @@ def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
     with open(json_path) as f:
         data = json.load(f)
 
+    # Pre-scan all mp4 files for fallback lookup (handles Normal_Videos dir mismatch)
+    mp4_map = {}
+    for root_dir, _, files in os.walk(VIDEO_ROOT):
+        for fname in files:
+            if fname.endswith(".mp4"):
+                mp4_map[fname] = os.path.join(root_dir, fname)
+
     samples = []
     for video_id, ann in data.items():
         category   = _category_from_id(video_id)
         video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
         if not os.path.isfile(video_path):
-            continue
+            # Fallback: search all subdirectories
+            fallback = mp4_map.get(f"{video_id}.mp4")
+            if fallback:
+                video_path = fallback
+            else:
+                continue
 
         duration      = float(ann.get("duration", MAX_DURATION))
         effective_end = min(duration, MAX_DURATION)

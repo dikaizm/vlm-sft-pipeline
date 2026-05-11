@@ -2,4 +2,4 @@
 .env
 output/
 venv/
-.venv/
+.venv/data/
