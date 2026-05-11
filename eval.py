@@ -37,7 +37,7 @@ from bert_score import score as bert_score_fn
 # Config
 # ---------------------------------------------------------------------------
 
-DATA_ROOT  = "/Volumes/T7/research-vlm/data"
+DATA_ROOT  = "./data"
 VIDEO_ROOT = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 TEST_JSON  = f"{DATA_ROOT}/UCFCrime_Test.json"
 

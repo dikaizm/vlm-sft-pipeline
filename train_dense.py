@@ -40,6 +40,7 @@ from transformers import (
     TrainerCallback,
 )
 from transformers.video_utils import VideoMetadata
+from patch_temporal import patch_model_with_temporal
 
 # ---------------------------------------------------------------------------
 # Config
@@ -59,15 +60,14 @@ NUM_FRAMES      = 16
 MAX_LENGTH      = 4096
 MAX_TRAIN       = -1      # videos (not clips); each has ~13 annotations
 MAX_VAL         = 379
-MAX_DURATION    = 120.0    # seconds — cap video length for VRAM
+MAX_DURATION    = 90.0    # seconds — cap video length for VRAM
 MAX_ANNOTATIONS = 12       # cap annotations per video
 SEED            = 42
 
 DENSE_PROMPT = (
-    "Describe ALL activities in this surveillance video. "
-    "For each activity, provide a description and its start and end timestamps in seconds. "
-    "List them in chronological order."
-)
+    "List every activity in this surveillance video. "
+    "Format: N. [start, end] description. Example: 1. [3.5, 8.2] A person walks in.\n"
+    "2. [12.0, 15.7] Two people meet.")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -310,8 +310,8 @@ def collate_fn_dense(batch: list[dict], processor) -> dict:
         video_metadata=metadatas,
         return_tensors="pt",
         padding=True,
-        truncation=True,
-        max_length=MAX_LENGTH,
+        truncation=False,
+        max_length=None,
     )
 
     # Label masking — only train on assistant response (verbatim from train_small.py)
@@ -371,7 +371,7 @@ def main():
         "num_epochs":                  5,
         "learning_rate":               2e-5,
         "batch_size":                  4,
-        "gradient_accumulation_steps": 2,
+        "gradient_accumulation_steps": 8,
         "effective_batch_size":        8,
         "max_length":                  MAX_LENGTH,
         "lr_scheduler":                "cosine",
@@ -414,8 +414,8 @@ def main():
 
         training_args = TrainingArguments(
             output_dir=OUTPUT_DIR,
-            per_device_train_batch_size=4,
-            gradient_accumulation_steps=2,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=8,
             num_train_epochs=5,
             learning_rate=2e-5,
             lr_scheduler_type="cosine",
@@ -426,9 +426,10 @@ def main():
             logging_steps=5,
             save_steps=100,
             eval_strategy="steps",
+            eval_accumulation_steps=4,
             eval_steps=100,
             remove_unused_columns=False,
-            dataloader_num_workers=0,
+            dataloader_num_workers=4,
             report_to="none",
         )
 
