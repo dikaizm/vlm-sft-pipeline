@@ -3,3 +3,4 @@
 output/
 venv/
 .venv/data/
+data/

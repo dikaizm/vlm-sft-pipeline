@@ -402,6 +402,7 @@ def main():
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
+        model = patch_model_with_temporal(model, num_frames=NUM_FRAMES)
         logger.info(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.0f}M")
 
         # --- Dataset ---
