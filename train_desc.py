@@ -57,7 +57,7 @@ MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.st
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-desc")
 
 NUM_FRAMES      = 32
-MAX_LENGTH      = 2048
+MAX_LENGTH      = 4096
 MAX_TRAIN       = -1
 MAX_VAL         = 379
 MAX_DURATION    = 90.0
