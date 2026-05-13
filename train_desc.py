@@ -1,19 +1,20 @@
 """
-Dense Video Captioning SFT — SmolVLM2-500M on UCF-Crime / UCA dataset.
+Activity Description SFT — SmolVLM2 on UCF-Crime / UCA dataset (no timestamps).
 
-Unlike train_small.py (which trains on single pre-segmented clips), this script
-trains the model to detect ALL activities in a full video and output them as a
-numbered list with timestamps:
+Fallback approach: model learns to describe ALL activities in a surveillance video
+as a numbered list, WITHOUT temporal localization. Simpler output space vs. train_dense.py.
 
-    1. [0.0, 5.3] A woman walks across the parking lot.
-    2. [7.0, 8.5] A man in white pushes another person.
+Output format:
+    1. A truck drove backwards and hit the store door.
+    2. Two men got out of the car.
+    3. Two men entered the store.
     ...
 
-Each training sample = one full video with ALL its annotations grouped together.
-This teaches the model to find crimes in raw footage — not just describe given clips.
+Works with both SmolVLM2-500M and SmolVLM2-2.2B (set MODEL_ID env var).
 
 Usage:
-    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_dense.py
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_desc.py
+    MODEL_ID=HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_desc.py
 """
 
 import json
@@ -40,7 +41,6 @@ from transformers import (
     TrainerCallback,
 )
 from transformers.video_utils import VideoMetadata
-from patch_temporal import patch_model_with_temporal
 
 # ---------------------------------------------------------------------------
 # Config
@@ -50,45 +50,24 @@ DATA_ROOT  = os.environ["DATA_ROOT"]
 VIDEO_ROOT = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 TRAIN_JSON = f"{DATA_ROOT}/UCFCrime_Train.json"
 VAL_JSON   = f"{DATA_ROOT}/UCFCrime_Val.json"
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-500m-dense-sft")
-MODEL_ID   = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-desc-sft")
+MODEL_ID   = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct")
 
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
-MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-dense")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-desc")
 
 NUM_FRAMES      = 32
-MAX_LENGTH      = 4096
-MAX_TRAIN       = -1      # videos (not clips); each has ~13 annotations
+MAX_LENGTH      = 2048
+MAX_TRAIN       = -1
 MAX_VAL         = 379
-MAX_DURATION    = 90.0    # seconds — cap video length for VRAM
-MAX_ANNOTATIONS = 12    # cap annotations per video
+MAX_DURATION    = 90.0
+MAX_ANNOTATIONS = 12
 SEED            = 42
-N_TIME_BINS     = 100   # Vid2Seq-style: quantize video duration into 100 bins
 
-# Time tokens encode relative position in video: <time_0>=start … <time_99>=end
-# At inference: bin k → seconds = (k / N_TIME_BINS) * video_duration
-DENSE_PROMPT = (
+DESC_PROMPT = (
     "Describe all activities in this surveillance video. "
-    "For each activity output: <time_START> <time_END> description, one per line. "
-    "<time_0> = video start, <time_99> = video end."
+    "List each activity on a new line, numbered from 1."
 )
-
-# ---------------------------------------------------------------------------
-# Time token helpers (Vid2Seq-style)
-# ---------------------------------------------------------------------------
-
-def ts_to_bin(t: float, duration: float, n_bins: int = N_TIME_BINS) -> str:
-    """Convert a timestamp in seconds to a special time token string."""
-    bin_idx = int(t / duration * n_bins)
-    return f"<time_{max(0, min(bin_idx, n_bins - 1))}>"
-
-
-def setup_time_tokens(processor, model, n_bins: int = N_TIME_BINS):
-    """Add <time_0>…<time_N-1> special tokens to tokenizer + resize model embeddings."""
-    time_tokens = [f"<time_{i}>" for i in range(n_bins)]
-    processor.tokenizer.add_special_tokens({"additional_special_tokens": time_tokens})
-    model.resize_token_embeddings(len(processor.tokenizer))
-    return processor, model
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +76,7 @@ def setup_time_tokens(processor, model, n_bins: int = N_TIME_BINS):
 
 def setup_logging(log_path: str) -> logging.Logger:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    logger = logging.getLogger("train_dense")
+    logger = logging.getLogger("train_desc")
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
     fh = logging.FileHandler(log_path, mode="w")
@@ -119,12 +98,10 @@ class MLflowMetricsCallback(TrainerCallback):
             return
         step = state.global_step
         metrics = {k: v for k, v in logs.items() if isinstance(v, (int, float))}
-        # Get LR from optimizer param groups (always accurate)
         trainer = kwargs.get("trainer")
         if trainer is not None and hasattr(trainer.optimizer, "param_groups"):
-            lr = trainer.optimizer.param_groups[0]["lr"]
-            metrics["learning_rate"] = lr
-        logger = logging.getLogger("train_dense")
+            metrics["learning_rate"] = trainer.optimizer.param_groups[0]["lr"]
+        logger = logging.getLogger("train_desc")
         logger.info(
             "  ".join(f"{k}={v:.6f}" if isinstance(v, float) else f"{k}={v}"
                       for k, v in sorted(metrics.items()))
@@ -136,7 +113,7 @@ class MLflowMetricsCallback(TrainerCallback):
 
 
 # ---------------------------------------------------------------------------
-# Dataset — group by video (dense captioning)
+# Dataset
 # ---------------------------------------------------------------------------
 
 def _category_from_id(video_id: str) -> str:
@@ -144,22 +121,9 @@ def _category_from_id(video_id: str) -> str:
 
 
 def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
-    """Each sample = one full video with ALL its annotations.
-
-    Returns one dict per video:
-      {
-        "video_id":      str,
-        "video_path":    str,
-        "duration":      float,
-        "effective_end": float,          # min(duration, MAX_DURATION)
-        "timestamps":    [[s, e], ...],  # sorted by start
-        "sentences":     [str, ...],
-      }
-    """
     with open(json_path) as f:
         data = json.load(f)
 
-    # Pre-scan all mp4 files for fallback lookup (handles Normal_Videos dir mismatch)
     mp4_map = {}
     for root_dir, _, files in os.walk(VIDEO_ROOT):
         for fname in files:
@@ -171,7 +135,6 @@ def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
         category   = _category_from_id(video_id)
         video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
         if not os.path.isfile(video_path):
-            # Fallback: search all subdirectories
             fallback = mp4_map.get(f"{video_id}.mp4")
             if fallback:
                 video_path = fallback
@@ -181,31 +144,25 @@ def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
         duration      = float(ann.get("duration", MAX_DURATION))
         effective_end = min(duration, MAX_DURATION)
 
-        # Collect valid annotations within effective_end
         pairs = []
         for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
             start, end = float(start), float(end)
-            if end <= start:
+            if end <= start or start > effective_end:
                 continue
-            if start > effective_end:
-                continue
-            end = min(end, effective_end)
-            pairs.append((start, end, sentence.strip()))
+            pairs.append((start, sentence.strip()))
 
         if not pairs:
             continue
 
         # Sort chronologically, cap at MAX_ANNOTATIONS
-        pairs.sort(key=lambda x: (x[0], x[1]))
+        pairs.sort(key=lambda x: x[0])
         pairs = pairs[:MAX_ANNOTATIONS]
 
         samples.append({
             "video_id":      video_id,
             "video_path":    video_path,
-            "duration":      duration,
             "effective_end": effective_end,
-            "timestamps":    [[s, e] for s, e, _ in pairs],
-            "sentences":     [sent for _, _, sent in pairs],
+            "sentences":     [s for _, s in pairs],
         })
 
     random.seed(SEED)
@@ -215,16 +172,16 @@ def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
 
 def build_dataset(json_path: str, max_videos: int, logger) -> Dataset:
     samples = _load_video_samples(json_path, max_videos)
-    total_annotations = sum(len(s["timestamps"]) for s in samples)
+    total_ann = sum(len(s["sentences"]) for s in samples)
     logger.info(
-        f"Loaded {len(samples)} videos ({total_annotations} annotations) "
+        f"Loaded {len(samples)} videos ({total_ann} annotations) "
         f"from {Path(json_path).name}"
     )
     return Dataset.from_list(samples)
 
 
 # ---------------------------------------------------------------------------
-# Frame extraction (verbatim from train_small.py)
+# Frame extraction
 # ---------------------------------------------------------------------------
 
 def extract_frames(video_path: str, start: float, end: float, n_frames: int) -> list:
@@ -260,21 +217,16 @@ def extract_frames(video_path: str, start: float, end: float, n_frames: int) -> 
             return [collected[i] for i in range(n_frames)]
 
     except Exception as e:
-        logging.getLogger("train_dense").warning(f"Frame extraction failed for {video_path}: {e}")
+        logging.getLogger("train_desc").warning(f"Frame extraction failed for {video_path}: {e}")
 
     return [Image.new("RGB", (224, 224), color=0)] * n_frames
 
-
-# ---------------------------------------------------------------------------
-# VideoMetadata (verbatim from train_small.py)
-# ---------------------------------------------------------------------------
 
 def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetadata:
     frame_timestamps = [
         start + i * (end - start) / max(n_frames - 1, 1)
         for i in range(n_frames)
     ]
-    # fps=10.0 with indices scaled by 10 preserves 0.1s precision (vs int() losing sub-second info)
     return VideoMetadata(
         total_num_frames=max(int(end * 10), n_frames),
         fps=10.0,
@@ -284,10 +236,10 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 
 
 # ---------------------------------------------------------------------------
-# Collate function — dense multi-activity response
+# Collate function
 # ---------------------------------------------------------------------------
 
-def collate_fn_dense(batch: list[dict], processor) -> dict:
+def collate_fn_desc(batch: list[dict], processor) -> dict:
     texts       = []
     frame_lists = []
     metadatas   = []
@@ -295,26 +247,21 @@ def collate_fn_dense(batch: list[dict], processor) -> dict:
     for sample in batch:
         effective_end = sample["effective_end"]
 
-        # Extract frames from full video span [0, effective_end]
         frames = extract_frames(sample["video_path"], 0.0, effective_end, NUM_FRAMES)
         frame_lists.append(frames)
         metadatas.append(_make_video_metadata(0.0, effective_end, NUM_FRAMES))
 
-        # Vid2Seq-style response: <time_start> <time_end> description per event
-        eff_end = sample["effective_end"]
-        lines   = []
-        for ts, sent in zip(sample["timestamps"], sample["sentences"]):
-            t_start = ts_to_bin(ts[0], eff_end)
-            t_end   = ts_to_bin(ts[1], eff_end)
-            lines.append(f"{t_start} {t_end} {sent}")
-        response = "\n".join(lines)
+        # Numbered list response — no timestamps
+        response = "\n".join(
+            f"{i+1}. {sent}" for i, sent in enumerate(sample["sentences"])
+        )
 
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "video"},
-                    {"type": "text", "text": DENSE_PROMPT},
+                    {"type": "text", "text": DESC_PROMPT},
                 ],
             },
             {
@@ -337,7 +284,6 @@ def collate_fn_dense(batch: list[dict], processor) -> dict:
         max_length=MAX_LENGTH,
     )
 
-    # Label masking — only train on assistant response (verbatim from train_small.py)
     labels = encoded["input_ids"].clone()
     assistant_token = processor.tokenizer.encode("Assistant:", add_special_tokens=False)
     for i, ids in enumerate(labels):
@@ -364,15 +310,15 @@ def collate_fn_dense(batch: list[dict], processor) -> dict:
 
 def main():
     assert torch.cuda.is_available(), (
-        "CUDA not found. train_dense.py requires a CUDA GPU (A40 recommended).\n"
-        "Check your environment: nvidia-smi"
+        "CUDA not found. train_desc.py requires a CUDA GPU.\n"
+        "Check: nvidia-smi"
     )
 
-    run_name = f"smolvlm2-500m-dense-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    run_name = f"smolvlm2-desc-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     log_file = os.path.join(OUTPUT_DIR, "logs", f"{run_name}.log")
     logger   = setup_logging(log_file)
 
-    logger.info("=== SmolVLM2-500M Dense Video Captioning SFT ===")
+    logger.info("=== SmolVLM2 Activity Description SFT (no timestamps) ===")
     logger.info(f"Model         : {MODEL_ID}")
     logger.info(f"Train         : {MAX_TRAIN} videos | Val: {MAX_VAL} videos")
     logger.info(f"Max duration  : {MAX_DURATION}s | Max annotations: {MAX_ANNOTATIONS}")
@@ -381,7 +327,6 @@ def main():
     logger.info(f"GPU           : {torch.cuda.get_device_name(0)}")
     logger.info(f"VRAM          : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-    # --- MLflow ---
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
@@ -395,14 +340,13 @@ def main():
         "learning_rate":               2e-5,
         "batch_size":                  4,
         "gradient_accumulation_steps": 8,
-        "effective_batch_size":        8,
         "max_length":                  MAX_LENGTH,
         "lr_scheduler":                "cosine",
         "warmup_steps":                30,
         "optimizer":                   "adamw_bnb_8bit",
         "precision":                   "bf16",
         "device":                      torch.cuda.get_device_name(0),
-        "task":                        "dense_video_captioning",
+        "task":                        "activity_description_no_timestamps",
         "seed":                        SEED,
     }
 
@@ -414,7 +358,6 @@ def main():
         except Exception as e:
             logger.warning(f"MLflow log_params failed: {e}")
 
-        # --- Model & processor ---
         logger.info("Loading model and processor...")
         processor = AutoProcessor.from_pretrained(MODEL_ID)
         model = AutoModelForImageTextToText.from_pretrained(
@@ -425,17 +368,12 @@ def main():
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-        processor, model = setup_time_tokens(processor, model)
-        logger.info(f"Vocab size after time tokens: {len(processor.tokenizer)}")
-        model, bridge = patch_model_with_temporal(model, num_frames=NUM_FRAMES)
         logger.info(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.0f}M")
 
-        # --- Dataset ---
         logger.info("Building datasets...")
         train_ds = build_dataset(TRAIN_JSON, MAX_TRAIN, logger)
         val_ds   = build_dataset(VAL_JSON,   MAX_VAL,   logger)
 
-        # --- Training args ---
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
         training_args = TrainingArguments(
@@ -459,7 +397,7 @@ def main():
             report_to="none",
         )
 
-        collator = functools.partial(collate_fn_dense, processor=processor)
+        collator = functools.partial(collate_fn_desc, processor=processor)
 
         trainer = Trainer(
             model=model,
@@ -470,7 +408,6 @@ def main():
             callbacks=[MLflowMetricsCallback()],
         )
 
-        # --- Train ---
         logger.info("Starting training...")
         train_result = trainer.train()
 
@@ -486,7 +423,6 @@ def main():
         logger.info(f"Final train_loss : {train_result.training_loss:.4f}")
         logger.info(f"Runtime          : {train_result.metrics['train_runtime']:.0f}s")
 
-        # --- Save model ---
         logger.info("Saving final model...")
         trainer.save_model(OUTPUT_DIR)
         processor.save_pretrained(OUTPUT_DIR)

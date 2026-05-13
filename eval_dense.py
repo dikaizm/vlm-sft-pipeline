@@ -16,15 +16,16 @@ DATA_ROOT = './data'
 VIDEO_ROOT = f'{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos'
 TEST_JSON = f'{DATA_ROOT}/UCFCrime_Test.json'
 DEFAULT_MODEL = './output/smolvlm2-500m-dense-sft'
-NUM_FRAMES = 16
-MAX_DURATION = 90.0
+NUM_FRAMES    = 32
+N_TIME_BINS   = 100
+MAX_DURATION  = 90.0
 MAX_NEW_TOKENS = 256
 SEED = 99
 
 DENSE_PROMPT = (
-    'Describe ALL activities in this surveillance video. '
-    'For each activity, provide a description and its start and end timestamps in seconds. '
-    'List them in chronological order.'
+    'Describe all activities in this surveillance video. '
+    'For each activity output: <time_START> <time_END> description, one per line. '
+    '<time_0> = video start, <time_99> = video end.'
 )
 
 def extract_frames(video_path, start, end, n_frames):
@@ -55,9 +56,10 @@ def extract_frames(video_path, start, end, n_frames):
     return [Image.new('RGB', (224, 224))] * n_frames
 
 def make_metadata(start, end, n_frames):
+    frame_ts = [start + i*(end-start)/max(n_frames-1,1) for i in range(n_frames)]
     return VideoMetadata(
-        total_num_frames=int(max(end, n_frames)), fps=1.0,
-        frames_indices=[int(start + i*(end-start)/max(n_frames-1,1)) for i in range(n_frames)],
+        total_num_frames=max(int(end*10), n_frames), fps=10.0,
+        frames_indices=[round(t*10) for t in frame_ts],
         duration=float(end))
 
 def run_inference(model, processor, device, frames, start, end):
@@ -65,19 +67,33 @@ def run_inference(model, processor, device, frames, start, end):
     text = processor.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
     md = make_metadata(start, end, len(frames))
     inputs = processor(text=[text], videos=[[frames]], video_metadata=[md],
-                       return_tensors='pt', truncation=False, max_length=None).to(device)
+                       return_tensors='pt', truncation=True, max_length=2048).to(device)
     with torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
     new = out[:, inputs['input_ids'].shape[1]:]
-    return processor.tokenizer.decode(new[0], skip_special_tokens=True).strip()
+    # keep special tokens so <time_k> survive; strip standard EOS/BOS manually
+    raw = processor.tokenizer.decode(new[0], skip_special_tokens=False)
+    raw = re.sub(r'<\|.*?\|>|</?s>|<pad>|<unk>', '', raw).strip()
+    return raw
 
-def parse_dense_output(text):
-    """Parse numbered list: '1. [s, e] desc\\n2. [s, e] desc'"""
+
+def _bin_to_time(token: str, duration: float) -> float:
+    m = re.match(r'<time_(\d+)>', token)
+    if m:
+        return int(m.group(1)) / N_TIME_BINS * duration
+    return -1.0
+
+
+def parse_dense_output(text: str, duration: float) -> list[dict]:
+    """Parse time token format: '<time_S> <time_E> description\\n...'"""
     entries = []
     for line in text.strip().split('\n'):
-        m = re.match(r'\s*\d+\.?\s*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\]\s*(.+)', line)
+        m = re.match(r'(<time_\d+>)\s+(<time_\d+>)\s+(.+)', line.strip())
         if m:
-            entries.append({'start': float(m.group(1)), 'end': float(m.group(2)), 'desc': m.group(3).strip()})
+            t_s = _bin_to_time(m.group(1), duration)
+            t_e = _bin_to_time(m.group(2), duration)
+            if t_s >= 0 and t_e >= 0:
+                entries.append({'start': t_s, 'end': t_e, 'desc': m.group(3).strip()})
     return entries
 
 def tiou(pred_s, pred_e, gt_s, gt_e):
@@ -134,6 +150,11 @@ def main():
 
     processor = AutoProcessor.from_pretrained(args.model)
     model = AutoModelForImageTextToText.from_pretrained(args.model, torch_dtype=dtype).to(device)
+    # register time tokens so the tokenizer knows <time_k> as special tokens
+    time_tokens = [f'<time_{i}>' for i in range(N_TIME_BINS)]
+    if time_tokens[0] not in processor.tokenizer.get_vocab():
+        processor.tokenizer.add_special_tokens({'additional_special_tokens': time_tokens})
+        model.resize_token_embeddings(len(processor.tokenizer))
     model.eval()
     print(f'Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M\n')
 
@@ -150,7 +171,7 @@ def main():
         eff_end = v['effective_end']
         frames = extract_frames(v['video_path'], 0.0, eff_end, NUM_FRAMES)
         pred_text = run_inference(model, processor, device, frames, 0.0, eff_end)
-        entries = parse_dense_output(pred_text)
+        entries = parse_dense_output(pred_text, eff_end)
         gts = v['gts']
 
         print(f'[{i:>3}/{len(videos)}] {v["video_id"]} ({len(gts)} GT, {len(entries)} pred)')

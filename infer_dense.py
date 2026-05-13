@@ -56,24 +56,25 @@ OUTPUT_DIR    = os.environ.get("OUTPUT_DIR",    "./output/smolvlm2-500m-dense-sf
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-dense")
 
-NUM_FRAMES      = 16
+NUM_FRAMES      = 32
+N_TIME_BINS     = 100
 MAX_DURATION    = 120.0   # seconds per window
-WINDOW_SIZE     = 120.0   # sliding window size
-WINDOW_STRIDE   = 60.0    # 50% overlap
+WINDOW_SIZE     = 90.0    # sliding window size (matches training MAX_DURATION)
+WINDOW_STRIDE   = 45.0    # 50% overlap
 MAX_NEW_TOKENS  = 512
 SEED            = 99
 
 DENSE_PROMPT = (
-    "Describe ALL activities in this surveillance video. "
-    "For each activity, provide a description and its start and end timestamps in seconds. "
-    "List them in chronological order."
+    "Describe all activities in this surveillance video. "
+    "For each activity output: <time_START> <time_END> description, one per line. "
+    "<time_0> = video start, <time_99> = video end."
 )
 
+# Window prompt: time tokens are relative to the window (time_0=window start, time_99=window end)
 WINDOW_PROMPT_TEMPLATE = (
-    "Describe ALL activities visible in this video segment. "
-    "Timestamps are relative to {offset:.0f}s of the full video. "
-    "For each activity, provide a description and its start and end timestamps in seconds. "
-    "List them in chronological order."
+    "Describe all activities visible in this video segment. "
+    "For each activity output: <time_START> <time_END> description, one per line. "
+    "<time_0> = segment start ({offset:.1f}s), <time_99> = segment end ({offset_end:.1f}s)."
 )
 
 
@@ -148,27 +149,34 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
         for i in range(n_frames)
     ]
     return VideoMetadata(
-        total_num_frames=max(int(end), n_frames),
-        fps=1.0,
-        frames_indices=[int(t) for t in frame_timestamps],
+        total_num_frames=max(int(end * 10), n_frames),
+        fps=10.0,
+        frames_indices=[round(t * 10) for t in frame_timestamps],
         duration=float(end),
     )
 
 
-def parse_dense_output(text: str) -> list[dict]:
-    """Parse numbered activity list from model output.
+def _bin_to_time(token: str, duration: float) -> float:
+    m = re.match(r"<time_(\d+)>", token)
+    if m:
+        return int(m.group(1)) / N_TIME_BINS * duration
+    return -1.0
 
-    Matches: "1. [0.0, 5.3] Description text here"
-    Returns: [{"start": 0.0, "end": 5.3, "description": "Description text here"}, ...]
-    """
-    pattern = r"\d+\.\s*\[(\d+\.?\d*),\s*(\d+\.?\d*)\]\s*(.+)"
+
+def parse_dense_output(text: str, duration: float) -> list[dict]:
+    """Parse time token format: '<time_S> <time_E> description\\n...'"""
     activities = []
-    for m in re.finditer(pattern, text):
-        activities.append({
-            "start":       float(m.group(1)),
-            "end":         float(m.group(2)),
-            "description": m.group(3).strip(),
-        })
+    for line in text.strip().split('\n'):
+        m = re.match(r"(<time_\d+>)\s+(<time_\d+>)\s+(.+)", line.strip())
+        if m:
+            t_s = _bin_to_time(m.group(1), duration)
+            t_e = _bin_to_time(m.group(2), duration)
+            if t_s >= 0 and t_e >= 0:
+                activities.append({
+                    "start":       t_s,
+                    "end":         t_e,
+                    "description": m.group(3).strip(),
+                })
     return activities
 
 
@@ -241,7 +249,10 @@ def run_inference(model, processor, device, frames: list,
         )
 
     new_tokens = out_ids[:, inputs["input_ids"].shape[1]:]
-    return processor.tokenizer.decode(new_tokens[0], skip_special_tokens=True).strip()
+    # keep <time_k> tokens; strip standard BOS/EOS/pad only
+    raw = processor.tokenizer.decode(new_tokens[0], skip_special_tokens=False)
+    raw = re.sub(r"<\|.*?\|>|</?s>|<pad>|<unk>", "", raw).strip()
+    return raw
 
 
 def infer_single_pass(model, processor, device, video_path: str) -> tuple[list[dict], str]:
@@ -251,7 +262,7 @@ def infer_single_pass(model, processor, device, video_path: str) -> tuple[list[d
 
     frames   = extract_frames(video_path, 0.0, effective_end, NUM_FRAMES)
     raw_text = run_inference(model, processor, device, frames, 0.0, effective_end, DENSE_PROMPT)
-    return parse_dense_output(raw_text), raw_text
+    return parse_dense_output(raw_text, effective_end), raw_text
 
 
 def infer_sliding_window(model, processor, device, video_path: str) -> tuple[list[dict], list[dict]]:
@@ -270,12 +281,13 @@ def infer_sliding_window(model, processor, device, video_path: str) -> tuple[lis
         w_start = t
         w_end   = min(t + WINDOW_SIZE, duration)
 
+        w_dur  = w_end - w_start
         frames = extract_frames(video_path, w_start, w_end, NUM_FRAMES)
-        prompt = WINDOW_PROMPT_TEMPLATE.format(offset=w_start)
+        prompt = WINDOW_PROMPT_TEMPLATE.format(offset=w_start, offset_end=w_end)
         raw    = run_inference(model, processor, device, frames, w_start, w_end, prompt)
 
-        # Timestamps from model are relative to window start
-        acts = parse_dense_output(raw)
+        # time tokens are relative to window; convert to global timestamps
+        acts = parse_dense_output(raw, w_dur)
         for a in acts:
             a["start"] += w_start
             a["end"]   += w_start
@@ -389,6 +401,11 @@ def main():
     model     = AutoModelForImageTextToText.from_pretrained(
         model_source, torch_dtype=dtype
     ).to(device)
+    # register time tokens (idempotent if already in saved vocab)
+    time_tokens = [f"<time_{i}>" for i in range(N_TIME_BINS)]
+    if time_tokens[0] not in processor.tokenizer.get_vocab():
+        processor.tokenizer.add_special_tokens({"additional_special_tokens": time_tokens})
+        model.resize_token_embeddings(len(processor.tokenizer))
     model.eval()
     print(f"  Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M\n")
 
