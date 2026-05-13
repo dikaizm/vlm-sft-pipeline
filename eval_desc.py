@@ -29,8 +29,9 @@ from bert_score import score as bert_score_fn
 DATA_ROOT      = os.environ.get("DATA_ROOT", "./data")
 VIDEO_ROOT     = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 TEST_JSON      = f"{DATA_ROOT}/UCFCrime_Test.json"
-DEFAULT_MODEL  = "./output/smolvlm2-desc-sft"
+DEFAULT_MODEL  = "./output/smolvlm2-500m-desc-sft/checkpoint-700"
 NUM_FRAMES     = 32
+MAX_LENGTH     = 4096
 MAX_DURATION   = 90.0
 MAX_NEW_TOKENS = 512
 SEED           = 99
@@ -88,7 +89,7 @@ def run_inference(model, processor, device, frames, start, end):
     md = make_metadata(start, end, len(frames))
     inputs = processor(
         text=[text], videos=[[frames]], video_metadata=[md],
-        return_tensors="pt", truncation=True, max_length=2048,
+        return_tensors="pt", truncation=True, max_length=MAX_LENGTH,
     ).to(device)
     with torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
