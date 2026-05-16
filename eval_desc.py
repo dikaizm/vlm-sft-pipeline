@@ -223,7 +223,7 @@ def main():
     print("\nComputing BERTScore...")
     _, _, bert_f1 = bert_score_fn(
         all_pred_descs, all_ref_descs,
-        lang="en", model_type="roberta-large", verbose=False,
+        lang="en", model_type="distilbert-base-uncased", verbose=False,
     )
     all_bert = bert_f1.tolist()
 
