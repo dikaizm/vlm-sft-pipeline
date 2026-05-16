@@ -20,11 +20,21 @@ from datetime import datetime
 
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoProcessor, AutoModelForImageTextToText, PreTrainedTokenizerBase
 from transformers.video_utils import VideoMetadata
 from rouge_score import rouge_scorer
 import sacrebleu
 from bert_score import score as bert_score_fn
+
+# bert_score 0.3.13 calls build_inputs_with_special_tokens removed in transformers ≥5.0
+if not hasattr(PreTrainedTokenizerBase, "build_inputs_with_special_tokens"):
+    def _build(self, token_ids_0, token_ids_1=None):
+        cls = [self.cls_token_id] if getattr(self, "cls_token_id", None) is not None else []
+        sep = [self.sep_token_id] if getattr(self, "sep_token_id", None) is not None else []
+        if token_ids_1 is None:
+            return cls + token_ids_0 + sep
+        return cls + token_ids_0 + sep + token_ids_1 + sep
+    PreTrainedTokenizerBase.build_inputs_with_special_tokens = _build
 
 DATA_ROOT      = os.environ.get("DATA_ROOT", "./data")
 VIDEO_ROOT     = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
@@ -223,7 +233,7 @@ def main():
     print("\nComputing BERTScore...")
     _, _, bert_f1 = bert_score_fn(
         all_pred_descs, all_ref_descs,
-        lang="en", model_type="distilbert-base-uncased", verbose=False,
+        lang="en", model_type="roberta-large", verbose=False,
     )
     all_bert = bert_f1.tolist()
 
