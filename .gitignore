@@ -2,6 +2,7 @@
 .env
 output/
 venv/
-.venv/data/
+.venv/
 data/
 ssh/
+.venv/
