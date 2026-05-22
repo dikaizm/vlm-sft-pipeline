@@ -27,9 +27,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import mlflow
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -46,10 +43,8 @@ from transformers import (
 # Config
 # ---------------------------------------------------------------------------
 
-DATA_ROOT  = os.environ["DATA_ROOT"]
-VIDEO_ROOT = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-TRAIN_JSON = f"{DATA_ROOT}/UCFCrime_Train.json"
-VAL_JSON   = f"{DATA_ROOT}/UCFCrime_Val.json"
+from config import DATA_ROOT, VIDEO_ROOT, TRAIN_JSON, VAL_JSON
+
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-desc-sft")
 MODEL_ID   = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct")
 

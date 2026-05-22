@@ -41,7 +41,8 @@ MAX_RETRIES = 5
 
 _HERE       = Path(__file__).parent
 TOKEN_PATH  = str(_HERE / "ssh" / "gdrive_token.pickle")
-DEFAULT_OUT = os.environ.get("DATA_ROOT", "./data")
+from config import DATA_ROOT
+DEFAULT_OUT = DATA_ROOT
 
 
 # ---------------------------------------------------------------------------

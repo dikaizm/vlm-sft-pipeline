@@ -36,8 +36,7 @@ from transformers.video_utils import VideoMetadata
 # Config
 # ---------------------------------------------------------------------------
 
-DATA_ROOT     = os.environ.get("DATA_ROOT", "./data")
-VIDEO_ROOT    = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
+from config import DATA_ROOT, VIDEO_ROOT, TEST_JSON
 
 MODEL_ID      = os.environ.get("MODEL_ID",      "HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct")
 FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-desc-sft")
