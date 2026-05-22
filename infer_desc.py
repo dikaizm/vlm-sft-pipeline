@@ -1,7 +1,7 @@
 """
-Activity description inference — describe ALL activities in a raw surveillance video.
+Activity description inference — describe activities in a surveillance video.
 
-No timestamp output. Model generates a numbered list of activities observed in the video.
+Fine-tuned model generates: '<t_start><t_end> [Category] description' per activity.
 
 Usage:
     # Single video
@@ -52,8 +52,10 @@ MAX_NEW_TOKENS = 512
 SEED           = 99
 
 DESC_PROMPT = (
-    "Describe all activities in this surveillance video. "
-    "List each activity on a new line, numbered from 1."
+    "List each activity observed in this surveillance video. "
+    "Format each line as: '<t_start><t_end> [Category] description' "
+    "using approximate timestamps in seconds. "
+    "If none, write 'None detected.'"
 )
 
 
@@ -134,17 +136,20 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
     )
 
 
-def parse_desc_output(text: str) -> list[str]:
-    """Parse numbered list output into a list of activity strings."""
-    sentences = []
+def parse_desc_output(text: str) -> list[dict]:
+    """Parse '<t_start><t_end> [Category] description' output into structured list."""
+    results = []
     for line in text.strip().split("\n"):
         line = line.strip()
-        m = re.match(r"^\d+\.\s*(.+)", line)
+        m = re.match(r"<(\d+)><(\d+)>\s*\[(\w+)\]\s*(.+)", line)
         if m:
-            sentences.append(m.group(1).strip())
-        elif line and not re.match(r"^\d+\.?\s*$", line):
-            sentences.append(line)
-    return sentences
+            results.append({
+                "t_start":     int(m.group(1)),
+                "t_end":       int(m.group(2)),
+                "category":    m.group(3),
+                "description": m.group(4).strip(),
+            })
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +310,8 @@ def main():
 
         print(sep)
         print(f"Detected {len(sentences)} activities:")
-        for j, s in enumerate(sentences, 1):
-            print(f"  {j}. {s}")
+        for act in sentences:
+            print(f"  <{act['t_start']}><{act['t_end']}> [{act['category']}] {act['description']}")
         print(sep)
 
         video_results.append({
@@ -337,8 +342,8 @@ def main():
             sentences = parse_desc_output(raw_text)
 
             print(f"  Predicted: {len(sentences)} activities")
-            for j, sent in enumerate(sentences, 1):
-                print(f"    {j}. {sent}")
+            for act in sentences:
+                print(f"    <{act['t_start']}><{act['t_end']}> [{act['category']}] {act['description']}")
             print(f"  Raw: {raw_text[:200]!r}{'...' if len(raw_text) > 200 else ''}")
             print()
 

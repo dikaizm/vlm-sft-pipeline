@@ -1,21 +1,19 @@
 """
-Activity Description SFT — SmolVLM2 on UCF-Crime / UCA dataset.
+Per-segment Activity Description SFT — SmolVLM2 on UCA dataset.
 
-Model learns to describe surveillance video activities with approximate timestamps
-and crime category labels (Option A: video-level label applied to all annotations).
+Each training sample = one annotation segment [t_start, t_end].
+Model sees only that clip and outputs:
+    <t_start><t_end> [Category] description
 
-Output format:
-    <0><25> [Assault] Two men engaged in a physical altercation near the entrance.
-    <25><60> [Assault] Bystanders attempt to intervene and separate the fighters.
-
-Category is derived from the video filename prefix (e.g. Assault031 → Assault).
-All annotations in a video share the same video-level category label.
-
-Works with both SmolVLM2-500M and SmolVLM2-2.2B (set MODEL_ID env var).
+Key improvements over train_desc.py:
+- Per-segment samples: forces temporal grounding (model must localize within clip)
+- Category-balanced sampling: fixes 13-class imbalance via WeightedRandomSampler
+- Full fine-tune including vision encoder: critical for crime category visual features
+- PyAV frame extraction per segment: no MAX_DURATION truncation needed
 
 Usage:
-    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_desc.py
-    MODEL_ID=HuggingFaceTB/SmolVLM2-500M-Video-Instruct DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_desc.py
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_seg.py
+    MODEL_ID=HuggingFaceTB/SmolVLM2-500M-Video-Instruct DATA_ROOT=/path/to/data python vlm-sft-pipeline/train_seg.py
 """
 
 import json
@@ -24,15 +22,19 @@ import re
 import random
 import functools
 import os
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
 
+import av
 import mlflow
 import torch
+from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from datasets import Dataset
 from transformers import (
     AutoProcessor,
@@ -41,6 +43,8 @@ from transformers import (
     TrainingArguments,
     TrainerCallback,
 )
+from transformers.video_utils import VideoMetadata
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -50,26 +54,17 @@ DATA_ROOT  = os.environ["DATA_ROOT"]
 VIDEO_ROOT = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 TRAIN_JSON = f"{DATA_ROOT}/UCFCrime_Train.json"
 VAL_JSON   = f"{DATA_ROOT}/UCFCrime_Val.json"
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-desc-sft")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-seg-sft")
 MODEL_ID   = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct")
 
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
-MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-desc")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-seg")
 
-SEED            = 42
-NUM_FRAMES      = 32
-MAX_LENGTH      = 4096
-MAX_TRAIN       = -1
-MAX_VAL         = 379
-MAX_DURATION    = 90.0
-MAX_ANNOTATIONS = 12
-
-DESC_PROMPT = (
-    "List each activity observed in this surveillance video. "
-    "Format each line as: '<t_start><t_end> [Category] description' "
-    "using approximate timestamps in seconds. "
-    "If none, write 'None detected.'"
-)
+SEED       = 42
+NUM_FRAMES = 16    # frames per segment (shorter clips → 16 sufficient)
+MAX_LENGTH = 2048
+MAX_TRAIN  = -1    # max unique videos to draw segments from (-1 = all)
+MAX_VAL    = -1
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +73,7 @@ DESC_PROMPT = (
 
 def setup_logging(log_path: str) -> logging.Logger:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    logger = logging.getLogger("train_desc")
+    logger = logging.getLogger("train_seg")
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
     fh = logging.FileHandler(log_path, mode="w")
@@ -103,7 +98,7 @@ class MLflowMetricsCallback(TrainerCallback):
         trainer = kwargs.get("trainer")
         if trainer is not None and hasattr(trainer.optimizer, "param_groups"):
             metrics["learning_rate"] = trainer.optimizer.param_groups[0]["lr"]
-        logger = logging.getLogger("train_desc")
+        logger = logging.getLogger("train_seg")
         logger.info(
             "  ".join(f"{k}={v:.6f}" if isinstance(v, float) else f"{k}={v}"
                       for k, v in sorted(metrics.items()))
@@ -115,14 +110,86 @@ class MLflowMetricsCallback(TrainerCallback):
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# Frame extraction
 # ---------------------------------------------------------------------------
+
+def extract_frames(video_path: str, t_start: float, t_end: float, n_frames: int) -> list:
+    try:
+        container = av.open(video_path)
+        stream    = container.streams.video[0]
+        duration  = float(stream.duration * stream.time_base) if stream.duration else t_end
+
+        t_start = max(0.0, min(t_start, duration))
+        t_end   = max(t_start + 0.1, min(t_end, duration))
+
+        collected = {}
+        container.seek(int(t_start * 1_000_000), any_frame=False, backward=True)
+
+        for frame in container.decode(video=0):
+            t = float(frame.pts * stream.time_base)
+            if t > t_end + 1.0:
+                break
+            span = t_end - t_start + 1e-9
+            slot = int((t - t_start) / span * n_frames)
+            slot = max(0, min(slot, n_frames - 1))
+            if slot not in collected:
+                collected[slot] = frame.to_image()
+            if len(collected) >= n_frames:
+                break
+        container.close()
+
+        if collected:
+            for i in range(n_frames):
+                if i not in collected:
+                    collected[i] = collected[min(collected.keys(), key=lambda k: abs(k - i))]
+            return [collected[i] for i in range(n_frames)]
+
+    except Exception as e:
+        logging.getLogger("train_seg").warning(f"Frame extraction failed ({video_path}): {e}")
+
+    return [Image.new("RGB", (224, 224), color=0)] * n_frames
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_metadata(t_start: float, t_end: float, n_frames: int) -> VideoMetadata:
+    step = (t_end - t_start) / max(n_frames - 1, 1)
+    frame_ts = [t_start + i * step for i in range(n_frames)]
+    return VideoMetadata(
+        total_num_frames=max(int(t_end * 30), n_frames),
+        fps=30.0,
+        frames_indices=[round(t * 30) for t in frame_ts],
+        duration=float(t_end),
+    )
+
+
+def _make_seg_prompt(t_start: float, t_end: float, n_frames: int) -> str:
+    """Prompt with absolute frame timestamps so model can output grounded timestamps."""
+    step = (t_end - t_start) / max(n_frames - 1, 1)
+    frame_ts = [round(t_start + i * step) for i in range(n_frames)]
+    frame_ctx = (
+        f"Clip: {int(t_start)}s to {int(t_end)}s. "
+        f"Frames at: {', '.join(str(t) + 's' for t in frame_ts)}."
+    )
+    return (
+        f"{frame_ctx}\n"
+        "Describe the activity in this surveillance clip. "
+        "Format: '<t_start><t_end> [Category] description' using the timestamps above. "
+        "If none, write 'None detected.'"
+    )
+
 
 def _category_from_id(video_id: str) -> str:
     return re.sub(r"\d+_x264$", "", video_id)
 
 
-def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
+# ---------------------------------------------------------------------------
+# Dataset — per-segment samples
+# ---------------------------------------------------------------------------
+
+def _load_seg_samples(json_path: str, max_videos: int) -> list[dict]:
     with open(json_path) as f:
         data = json.load(f)
 
@@ -132,7 +199,8 @@ def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
             if fname.endswith(".mp4"):
                 mp4_map[fname] = os.path.join(root_dir, fname)
 
-    samples = []
+    # Collect per-video first, then expand to per-segment
+    videos = []
     for video_id, ann in data.items():
         category   = _category_from_id(video_id)
         video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
@@ -142,45 +210,44 @@ def _load_video_samples(json_path: str, max_videos: int) -> list[dict]:
                 video_path = fallback
             else:
                 continue
-
-        duration      = float(ann.get("duration", MAX_DURATION))
-        effective_end = min(duration, MAX_DURATION)
-
-        pairs = []
-        for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
-            start, end = float(start), float(end)
-            if end <= start or start > effective_end:
-                continue
-            pairs.append((start, min(end, effective_end), sentence.strip()))
-
-        if not pairs:
-            continue
-
-        pairs.sort(key=lambda x: x[0])
-        pairs = pairs[:MAX_ANNOTATIONS]
-
-        samples.append({
-            "video_id":      video_id,
-            "category":      category,
-            "video_path":    video_path,
-            "annotations": [
-                {"t_start": int(t0), "t_end": int(t1), "sentence": s}
-                for t0, t1, s in pairs
-            ],
-        })
+        videos.append((video_id, category, video_path, ann))
 
     random.seed(SEED)
-    random.shuffle(samples)
-    return samples if max_videos == -1 else samples[:max_videos]
+    random.shuffle(videos)
+    if max_videos != -1:
+        videos = videos[:max_videos]
+
+    samples = []
+    for video_id, category, video_path, ann in videos:
+        duration = float(ann.get("duration", 0.0))
+        for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
+            start, end = float(start), float(end)
+            if end <= start:
+                continue
+            if duration > 0:
+                end = min(end, duration)
+            if end <= start:
+                continue
+            samples.append({
+                "video_id":   video_id,
+                "category":   category,
+                "video_path": video_path,
+                "t_start":    start,
+                "t_end":      end,
+                "sentence":   sentence.strip(),
+            })
+
+    return samples
 
 
 def build_dataset(json_path: str, max_videos: int, logger) -> Dataset:
-    samples = _load_video_samples(json_path, max_videos)
-    total_ann = sum(len(s["annotations"]) for s in samples)
+    samples = _load_seg_samples(json_path, max_videos)
+    counts  = Counter(s["category"] for s in samples)
     logger.info(
-        f"Loaded {len(samples)} videos ({total_ann} annotations) "
-        f"from {Path(json_path).name}"
+        f"Loaded {len(samples)} segments from {len(set(s['video_id'] for s in samples))} videos "
+        f"({Path(json_path).name})"
     )
+    logger.info(f"Category distribution: {dict(sorted(counts.items()))}")
     return Dataset.from_list(samples)
 
 
@@ -188,24 +255,23 @@ def build_dataset(json_path: str, max_videos: int, logger) -> Dataset:
 # Collate function
 # ---------------------------------------------------------------------------
 
-def collate_fn_desc(batch: list[dict], processor) -> dict:
+def collate_fn_seg(batch: list[dict], processor) -> dict:
     image_token_id = processor.tokenizer.additional_special_tokens_ids[
         processor.tokenizer.additional_special_tokens.index("<image>")
     ]
 
     instances = []
     for sample in batch:
-        response = "\n".join(
-            f"<{ann['t_start']}><{ann['t_end']}> [{sample['category']}] {ann['sentence']}"
-            for ann in sample["annotations"]
-        )
+        frames   = extract_frames(sample["video_path"], sample["t_start"], sample["t_end"], NUM_FRAMES)
+        prompt   = _make_seg_prompt(sample["t_start"], sample["t_end"], len(frames))
+        response = f"<{int(sample['t_start'])}><{int(sample['t_end'])}> [{sample['category']}] {sample['sentence']}"
 
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "video", "path": sample["video_path"]},
-                    {"type": "text", "text": DESC_PROMPT},
+                    {"type": "video"},
+                    {"type": "text", "text": prompt},
                 ],
             },
             {
@@ -214,12 +280,17 @@ def collate_fn_desc(batch: list[dict], processor) -> dict:
             },
         ]
 
-        instance = processor.apply_chat_template(
-            messages,
-            add_generation_prompt=False,
-            tokenize=True,
-            return_dict=True,
+        text     = processor.apply_chat_template(messages, add_generation_prompt=False, tokenize=False)
+        metadata = _make_metadata(sample["t_start"], sample["t_end"], len(frames))
+
+        instance = processor(
+            text=[text],
+            videos=[[frames]],
+            video_metadata=[metadata],
             return_tensors="pt",
+            padding=False,
+            truncation=True,
+            max_length=MAX_LENGTH,
         )
         instances.append(instance)
 
@@ -239,11 +310,11 @@ def collate_fn_desc(batch: list[dict], processor) -> dict:
         padding_value=-100,
     )
 
-    # Mask image tokens and padding in labels
-    labels[labels == image_token_id] = -100
+    # Mask image tokens and padding
+    labels[labels == image_token_id]                   = -100
     labels[labels == processor.tokenizer.pad_token_id] = -100
 
-    # Mask prompt tokens (everything up to and including "Assistant:")
+    # Mask prompt tokens up to and including "Assistant:"
     assistant_token = processor.tokenizer.encode("Assistant:", add_special_tokens=False)
     for i, ids in enumerate(input_ids):
         ids_list  = ids.tolist()
@@ -261,7 +332,7 @@ def collate_fn_desc(batch: list[dict], processor) -> dict:
         "labels":         labels,
     }
 
-    # Pad pixel_values across batch (variable frames/resolution)
+    # Pad pixel_values across batch
     pvs = [inst["pixel_values"].squeeze(0) for inst in instances if "pixel_values" in inst]
     if pvs:
         max_frames = max(pv.shape[0] for pv in pvs)
@@ -285,48 +356,74 @@ def collate_fn_desc(batch: list[dict], processor) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Balanced trainer — WeightedRandomSampler for category balance
+# ---------------------------------------------------------------------------
+
+class BalancedTrainer(Trainer):
+    """Overrides train DataLoader to use category-balanced sampling."""
+
+    def get_train_dataloader(self) -> DataLoader:
+        ds         = self.train_dataset
+        categories = [s["category"] for s in ds]
+        counts     = Counter(categories)
+        weights    = torch.tensor([1.0 / counts[c] for c in categories], dtype=torch.float)
+        sampler    = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+
+        return DataLoader(
+            ds,
+            batch_size=self.args.per_device_train_batch_size,
+            sampler=sampler,
+            collate_fn=self.data_collator,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     assert torch.cuda.is_available(), (
-        "CUDA not found. train_desc.py requires a CUDA GPU.\n"
+        "CUDA not found. train_seg.py requires a CUDA GPU.\n"
         "Check: nvidia-smi"
     )
 
-    run_name = f"smolvlm2-desc-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    run_name = f"smolvlm2-seg-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     log_file = os.path.join(OUTPUT_DIR, "logs", f"{run_name}.log")
     logger   = setup_logging(log_file)
 
-    logger.info("=== SmolVLM2 Activity Description SFT (timestamp + category) ===")
-    logger.info(f"Model         : {MODEL_ID}")
-    logger.info(f"Train         : {MAX_TRAIN} videos | Val: {MAX_VAL} videos")
-    logger.info(f"Max duration  : {MAX_DURATION}s | Max annotations: {MAX_ANNOTATIONS}")
-    logger.info(f"Frames        : {NUM_FRAMES} | Max length: {MAX_LENGTH}")
-    logger.info(f"Output        : {OUTPUT_DIR}")
-    logger.info(f"GPU           : {torch.cuda.get_device_name(0)}")
-    logger.info(f"VRAM          : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    logger.info("=== SmolVLM2 Per-Segment Activity Description SFT ===")
+    logger.info(f"Model     : {MODEL_ID}")
+    logger.info(f"Frames    : {NUM_FRAMES}/segment | Max length: {MAX_LENGTH}")
+    logger.info(f"Output    : {OUTPUT_DIR}")
+    logger.info(f"GPU       : {torch.cuda.get_device_name(0)}")
+    logger.info(f"VRAM      : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
+    logger.info("Building datasets...")
+    train_ds = build_dataset(TRAIN_JSON, MAX_TRAIN, logger)
+    val_ds   = build_dataset(VAL_JSON,   MAX_VAL,   logger)
+
     hparams = {
-        "model_id":                    MODEL_ID,
-        "num_frames":                  NUM_FRAMES,
-        "max_train_videos":            train_count if MAX_TRAIN == -1 else MAX_TRAIN,
-        "max_duration_seconds":        MAX_DURATION,
-        "max_annotations_per_video":   MAX_ANNOTATIONS,
-        "num_epochs":                  5,
-        "learning_rate":               2e-5,
-        "batch_size":                  4,
-        "gradient_accumulation_steps": 8,
-        "lr_scheduler":                "cosine",
-        "warmup_steps":                30,
-        "optimizer":                   "adamw_bnb_8bit",
-        "precision":                   "bf16",
-        "device":                      torch.cuda.get_device_name(0),
-        "task":                        "activity_description_timestamp_category_optionA",
-        "seed":                        SEED,
+        "model_id":          MODEL_ID,
+        "num_frames":        NUM_FRAMES,
+        "train_segments":    len(train_ds),
+        "val_segments":      len(val_ds),
+        "num_epochs":        5,
+        "learning_rate":     1e-4,
+        "batch_size":        1,
+        "grad_accum_steps":  8,
+        "lr_scheduler":      "cosine",
+        "warmup_steps":      50,
+        "optimizer":         "adamw_hf",
+        "precision":         "bf16",
+        "sampling":          "category_balanced",
+        "task":              "per_segment_temporal_category",
+        "seed":              SEED,
+        "device":            torch.cuda.get_device_name(0),
     }
 
     run = mlflow.start_run(run_name=run_name)
@@ -339,7 +436,7 @@ def main():
 
         logger.info("Loading model and processor...")
         processor = AutoProcessor.from_pretrained(MODEL_ID)
-        model = AutoModelForImageTextToText.from_pretrained(
+        model     = AutoModelForImageTextToText.from_pretrained(
             MODEL_ID,
             torch_dtype=torch.bfloat16,
             _attn_implementations="flash_attention_2",
@@ -348,13 +445,12 @@ def main():
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-        logger.info(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.0f}M")
+        total_params     = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Total params    : {total_params / 1e6:.0f}M")
+        logger.info(f"Trainable params: {trainable_params / 1e6:.0f}M  (full fine-tune)")
         peak_mem = torch.cuda.max_memory_allocated()
-        print(f"The model as is is holding: {peak_mem / 1024**3:.2f} of GPU RAM")
-
-        logger.info("Building datasets...")
-        train_ds = build_dataset(TRAIN_JSON, MAX_TRAIN, logger)
-        val_ds   = build_dataset(VAL_JSON,   MAX_VAL,   logger)
+        logger.info(f"GPU RAM after load: {peak_mem / 1e9:.2f} GB")
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -368,25 +464,25 @@ def main():
             warmup_steps=50,
             optim="adamw_hf",
             bf16=True,
-            max_grad_norm=1.0,            
+            max_grad_norm=1.0,
             weight_decay=0.01,
             logging_steps=25,
             save_strategy="steps",
-            logging_steps=25,
             save_steps=250,
             save_total_limit=1,
             eval_strategy="steps",
-            eval_accumulation_steps=4,
             eval_steps=250,
+            eval_accumulation_steps=4,
             remove_unused_columns=False,
-            dataloader_num_workers=4,
+            dataloader_num_workers=2,
             dataloader_pin_memory=False,
             report_to="tensorboard",
+            seed=SEED,
         )
 
-        collator = functools.partial(collate_fn_desc, processor=processor)
+        collator = functools.partial(collate_fn_seg, processor=processor)
 
-        trainer = Trainer(
+        trainer = BalancedTrainer(
             model=model,
             args=training_args,
             train_dataset=train_ds,
@@ -420,7 +516,10 @@ def main():
             logger.warning(f"MLflow log_artifact failed: {e}")
 
         logger.info(f"Done. Checkpoint: {OUTPUT_DIR}")
-        logger.info(f"MLflow run URL: {MLFLOW_URI}#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
+        logger.info(
+            f"MLflow URL: {MLFLOW_URI}#/experiments/"
+            f"{run.info.experiment_id}/runs/{run.info.run_id}"
+        )
 
     finally:
         try:
