@@ -4,3 +4,4 @@ output/
 venv/
 .venv/data/
 data/
+ssh/
