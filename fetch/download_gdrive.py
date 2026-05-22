@@ -30,6 +30,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -49,7 +51,7 @@ CHUNK_SIZE      = 32 * 1024 * 1024   # 32 MB
 MAX_RETRIES     = 5
 DEFAULT_WORKERS = 5
 
-_HERE       = Path(__file__).parent
+_HERE       = Path(__file__).parent.parent   # pipeline root
 TOKEN_PATH  = str(_HERE / "ssh" / "gdrive_token.pickle")
 
 from config import DATA_ROOT

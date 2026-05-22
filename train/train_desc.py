@@ -27,6 +27,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import mlflow
 import torch
 from torch.nn.utils.rnn import pad_sequence

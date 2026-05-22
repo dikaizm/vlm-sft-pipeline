@@ -25,6 +25,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -40,7 +43,7 @@ from transformers import (
     TrainerCallback,
 )
 from transformers.video_utils import VideoMetadata
-from patch_temporal import patch_model_with_temporal
+from utils.patch_temporal import patch_model_with_temporal
 
 # ---------------------------------------------------------------------------
 # Config
