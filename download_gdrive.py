@@ -1,8 +1,14 @@
 """
-Download dataset from Google Drive using OAuth token pickle.
+Download dataset from Google Drive using OAuth token pickle (parallel).
 
-Source : https://drive.google.com/open?id=1kTUAV-rR3Rio81djO8WzS8mSG-lCHzJN
-Token  : vlm-sft-pipeline/ssh/gdrive_token.pickle
+Source  : https://drive.google.com/open?id=1kTUAV-rR3Rio81djO8WzS8mSG-lCHzJN
+Token   : vlm-sft-pipeline/ssh/gdrive_token.pickle
+Workers : 5 parallel downloads (override with --workers N)
+
+Stages:
+  1. Walk Drive folder tree, create local dirs, build flat task list
+  2. Filter tasks: skip files already present with matching size
+  3. Download remaining files in parallel via ThreadPoolExecutor
 
 Skips files already present with matching size (resume-safe).
 Downloads with 32 MB chunks. Retries on transient errors.
@@ -11,6 +17,7 @@ Usage:
     DATA_ROOT=/path/to/data python vlm-sft-pipeline/download_gdrive.py
     python vlm-sft-pipeline/download_gdrive.py --out /path/to/data
     python vlm-sft-pipeline/download_gdrive.py --out /path/to/data --dry-run
+    python vlm-sft-pipeline/download_gdrive.py --out /path/to/data --workers 3
 """
 
 import argparse
@@ -18,7 +25,9 @@ import io
 import os
 import pickle
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -34,13 +43,15 @@ from tqdm import tqdm
 # Config
 # ---------------------------------------------------------------------------
 
-FOLDER_ID   = "1kTUAV-rR3Rio81djO8WzS8mSG-lCHzJN"
-MIME_FOLDER = "application/vnd.google-apps.folder"
-CHUNK_SIZE  = 32 * 1024 * 1024   # 32 MB
-MAX_RETRIES = 5
+FOLDER_ID       = "1kTUAV-rR3Rio81djO8WzS8mSG-lCHzJN"
+MIME_FOLDER     = "application/vnd.google-apps.folder"
+CHUNK_SIZE      = 32 * 1024 * 1024   # 32 MB
+MAX_RETRIES     = 5
+DEFAULT_WORKERS = 5
 
 _HERE       = Path(__file__).parent
 TOKEN_PATH  = str(_HERE / "ssh" / "gdrive_token.pickle")
+
 from config import DATA_ROOT
 DEFAULT_OUT = DATA_ROOT
 
@@ -68,7 +79,20 @@ def load_credentials(token_path: str):
 
 
 # ---------------------------------------------------------------------------
-# Drive helpers
+# Per-thread Drive service
+# ---------------------------------------------------------------------------
+
+_thread_local = threading.local()
+
+def get_service(credentials):
+    if not hasattr(_thread_local, "service"):
+        _thread_local.service = build("drive", "v3", credentials=credentials,
+                                      cache_discovery=False)
+    return _thread_local.service
+
+
+# ---------------------------------------------------------------------------
+# Drive folder listing
 # ---------------------------------------------------------------------------
 
 def list_folder(service, folder_id: str) -> list[dict]:
@@ -90,53 +114,81 @@ def list_folder(service, folder_id: str) -> list[dict]:
     return items
 
 
-def download_file(service, file_id: str, dest: Path,
-                  remote_size: int, dry_run: bool) -> str:
+# ---------------------------------------------------------------------------
+# Build flat task list — walk Drive tree, create local dirs
+# ---------------------------------------------------------------------------
+
+def build_download_tasks(service, folder_id: str, local_dir: Path) -> list[dict]:
+    """
+    Recursively walk Drive folder. Create local dirs as needed.
+    Returns flat list of dicts: {file_id, name, size, dest}.
+    """
+    tasks = []
+    _walk_drive(service, folder_id, local_dir, tasks)
+    return tasks
+
+
+def _walk_drive(service, folder_id: str, local_dir: Path, tasks: list) -> None:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    items   = list_folder(service, folder_id)
+    folders = sorted([i for i in items if i["mimeType"] == MIME_FOLDER], key=lambda x: x["name"])
+    files   = sorted([i for i in items if i["mimeType"] != MIME_FOLDER],  key=lambda x: x["name"])
+
+    for folder in folders:
+        _walk_drive(service, folder["id"], local_dir / folder["name"], tasks)
+
+    for f in files:
+        tasks.append({
+            "file_id": f["id"],
+            "name":    f["name"],
+            "size":    int(f.get("size", 0)),
+            "dest":    local_dir / f["name"],
+        })
+
+
+# ---------------------------------------------------------------------------
+# Download single file
+# ---------------------------------------------------------------------------
+
+def download_file(credentials, task: dict, dry_run: bool) -> str:
     """Returns: 'downloaded' | 'skipped' | 'dry-run' | 'error:<msg>'"""
-    if dest.exists():
-        if remote_size and dest.stat().st_size == remote_size:
-            return "skipped"
+    dest        = task["dest"]
+    remote_size = task["size"]
+
+    if dest.exists() and remote_size and dest.stat().st_size == remote_size:
+        return "skipped"
 
     if dry_run:
         return "dry-run"
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp     = dest.with_suffix(dest.suffix + ".part")
+    service = get_service(credentials)
 
     for attempt in range(1, MAX_RETRIES + 1):
+        fh = None
         try:
-            request    = service.files().get_media(fileId=file_id,
+            request    = service.files().get_media(fileId=task["file_id"],
                                                    supportsAllDrives=True)
             fh         = io.FileIO(str(tmp), mode="wb")
             downloader = MediaIoBaseDownload(fh, request, chunksize=CHUNK_SIZE)
-
-            with tqdm(
-                total=remote_size or 0,
-                unit="B", unit_scale=True,
-                desc=f"  {dest.name}",
-                leave=False, dynamic_ncols=True,
-            ) as pbar:
-                done = False
-                prev = 0
-                while not done:
-                    status, done = downloader.next_chunk()
-                    if status:
-                        cur = int(status.resumable_progress)
-                        pbar.update(cur - prev)
-                        prev = cur
-
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
             fh.close()
             tmp.rename(dest)
             return "downloaded"
 
         except HttpError as e:
-            fh.close()
+            if fh:
+                fh.close()
             tmp.unlink(missing_ok=True)
             if attempt == MAX_RETRIES or e.resp.status not in (429, 500, 502, 503, 504):
                 return f"error:HTTP {e.resp.status}"
             time.sleep(2 ** attempt)
         except Exception as e:
-            fh.close()
+            if fh:
+                fh.close()
             tmp.unlink(missing_ok=True)
             if attempt == MAX_RETRIES:
                 return f"error:{e}"
@@ -146,74 +198,16 @@ def download_file(service, file_id: str, dest: Path,
 
 
 # ---------------------------------------------------------------------------
-# Recursive download
-# ---------------------------------------------------------------------------
-
-def download_folder(service, folder_id: str, local_dir: Path,
-                    dry_run: bool, stats: dict, pbar: tqdm, depth: int = 0) -> None:
-    items   = list_folder(service, folder_id)
-    folders = sorted([i for i in items if i["mimeType"] == MIME_FOLDER], key=lambda x: x["name"])
-    files   = sorted([i for i in items if i["mimeType"] != MIME_FOLDER],  key=lambda x: x["name"])
-
-    for folder in folders:
-        local_dir.mkdir(parents=True, exist_ok=True)
-        download_folder(service, folder["id"], local_dir / folder["name"],
-                        dry_run, stats, pbar, depth + 1)
-
-    for f in files:
-        remote_size = int(f.get("size", 0))
-        dest        = local_dir / f["name"]
-
-        status = download_file(service, f["id"], dest, remote_size, dry_run)
-
-        if status == "downloaded":
-            stats["downloaded"] += 1
-            stats["bytes"]      += remote_size
-        elif status == "skipped":
-            stats["skipped"] += 1
-        elif status == "dry-run":
-            stats["dry_run"] += 1
-            mb = remote_size / 1e6
-            tqdm.write(f"  [dry-run] {dest}  ({mb:.1f} MB)")
-        else:
-            stats["errors"] += 1
-            tqdm.write(f"  [ERROR] {f['name']}: {status}")
-
-        pbar.set_postfix({"↓": stats["downloaded"], "skip": stats["skipped"]})
-        pbar.update(1)
-
-
-# ---------------------------------------------------------------------------
-# Count remote files (for progress bar total)
-# ---------------------------------------------------------------------------
-
-def count_remote_files(service, folder_id: str) -> int:
-    total = 0
-    queue = [folder_id]
-    with tqdm(desc="  Counting remote files", unit="folder", dynamic_ncols=True) as pbar:
-        while queue:
-            fid   = queue.pop()
-            items = list_folder(service, fid)
-            for i in items:
-                if i["mimeType"] == MIME_FOLDER:
-                    queue.append(i["id"])
-                else:
-                    total += 1
-            pbar.update(1)
-            pbar.set_postfix({"files": total})
-    return total
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Download dataset from Google Drive")
-    parser.add_argument("--out",       default=DEFAULT_OUT,  help="Local output directory")
-    parser.add_argument("--token",     default=TOKEN_PATH,   help="Path to token.pickle")
-    parser.add_argument("--folder-id", default=FOLDER_ID,    help="Drive folder ID")
-    parser.add_argument("--dry-run",   action="store_true",  help="List files without downloading")
+    parser = argparse.ArgumentParser(description="Download dataset from Google Drive in parallel")
+    parser.add_argument("--out",       default=DEFAULT_OUT,       help="Local output directory")
+    parser.add_argument("--token",     default=TOKEN_PATH,        help="Path to token.pickle")
+    parser.add_argument("--folder-id", default=FOLDER_ID,         help="Drive folder ID")
+    parser.add_argument("--workers",   type=int, default=DEFAULT_WORKERS, help="Parallel download workers (default: 5)")
+    parser.add_argument("--dry-run",   action="store_true",       help="List files without downloading")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -222,6 +216,7 @@ def main():
     print(f"Output    : {out_dir.resolve()}")
     print(f"Folder ID : {args.folder_id}")
     print(f"Token     : {args.token}")
+    print(f"Workers   : {args.workers}")
     print(f"Dry run   : {args.dry_run}")
     print()
 
@@ -236,23 +231,72 @@ def main():
     except HttpError as e:
         sys.exit(f"ERROR: cannot access folder {args.folder_id}: {e}")
 
-    print("Counting remote files...")
-    total = count_remote_files(service, args.folder_id)
-    print(f"  {total} files in Drive folder\n")
+    # Stage 1: walk Drive tree, build task list
+    print("Walking Drive folder tree and building task list...")
+    with tqdm(desc="  Scanning", unit="folder", dynamic_ncols=True) as _:
+        tasks = build_download_tasks(service, args.folder_id, out_dir)
+    print(f"  {len(tasks)} files found on Drive\n")
 
-    stats = {"downloaded": 0, "skipped": 0, "errors": 0, "dry_run": 0, "bytes": 0}
+    # Stage 2: filter already-present files
+    pending = [t for t in tasks
+               if not (t["dest"].exists() and t["size"] and
+                       t["dest"].stat().st_size == t["size"])]
+    skipped_upfront = len(tasks) - len(pending)
+    total_bytes     = sum(t["size"] for t in pending)
 
-    with tqdm(total=total, unit="file", desc="Downloading", dynamic_ncols=True) as pbar:
-        download_folder(service, args.folder_id, out_dir, args.dry_run, stats, pbar)
+    print(f"  To download : {len(pending)} files ({total_bytes / 1e9:.2f} GB)")
+    print(f"  Already present : {skipped_upfront} files\n")
+
+    if not pending:
+        print("Nothing to download.")
+        return
+
+    if args.dry_run:
+        for t in pending:
+            print(f"  [dry-run] {t['dest'].relative_to(out_dir)} ({t['size'] / 1e6:.1f} MB)")
+        print(f"\nDry run: {len(pending)} files would be downloaded.")
+        return
+
+    # Stage 3: parallel download
+    stats      = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+    stats_lock = threading.Lock()
+
+    print(f"Downloading {len(pending)} files with {args.workers} parallel workers...\n")
+
+    with tqdm(total=len(pending), unit="file", desc="Downloading", dynamic_ncols=True) as pbar:
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            future_map = {
+                executor.submit(download_file, creds, task, False): task
+                for task in pending
+            }
+
+            for future in as_completed(future_map):
+                task   = future_map[future]
+                status = future.result()
+
+                with stats_lock:
+                    if status == "downloaded":
+                        stats["downloaded"] += 1
+                        stats["bytes"]      += task["size"]
+                    elif status == "skipped":
+                        stats["skipped"] += 1
+                    elif status.startswith("error"):
+                        stats["errors"] += 1
+                        tqdm.write(f"  [ERROR] {task['name']}: {status}")
+
+                pbar.set_postfix({
+                    "↓": stats["downloaded"],
+                    "skip": stats["skipped"],
+                    "err": stats["errors"],
+                    "GB": f"{stats['bytes'] / 1e9:.2f}",
+                })
+                pbar.update(1)
 
     print()
     print("=" * 50)
-    if args.dry_run:
-        print(f"Dry run  : {stats['dry_run']} files would be downloaded")
-    else:
-        print(f"Downloaded : {stats['downloaded']} files ({stats['bytes'] / 1e9:.2f} GB)")
-        print(f"Skipped    : {stats['skipped']} files (already present)")
-        print(f"Errors     : {stats['errors']} files")
+    print(f"Downloaded : {stats['downloaded']} files ({stats['bytes'] / 1e9:.2f} GB)")
+    print(f"Skipped    : {stats['skipped'] + skipped_upfront} files (already present)")
+    print(f"Errors     : {stats['errors']} files")
     print(f"Output     : {out_dir.resolve()}")
 
 
