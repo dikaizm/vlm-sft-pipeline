@@ -59,8 +59,10 @@ _MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-500M-Video-
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
 
-NUM_FRAMES  = 8
-MAX_LENGTH  = 2048
+FRAMES_PER_SEC = 4      # 4 frames per second of clip duration
+MAX_FRAMES     = 32     # cap — limits VRAM / sequence length (500M: 32 fits in 16GB)
+MIN_FRAMES     = 2      # floor for very short clips
+MAX_LENGTH     = 2048
 SEED        = 42
 
 # ---------------------------------------------------------------------------
@@ -152,6 +154,12 @@ def build_dataset(json_path: str, video_root: str, max_samples: int, logger) -> 
 # Frame extraction
 # ---------------------------------------------------------------------------
 
+def adaptive_n_frames(start: float, end: float) -> int:
+    """1 frame/sec of clip duration, clamped to [MIN_FRAMES, MAX_FRAMES]."""
+    n = int(round((end - start) * FRAMES_PER_SEC))
+    return max(MIN_FRAMES, min(n, MAX_FRAMES))
+
+
 def extract_frames(video_path: str, start: float, end: float, n_frames: int) -> list:
     try:
         import av
@@ -213,11 +221,12 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
     metadatas   = []
 
     for sample in batch:
+        n_frames = adaptive_n_frames(sample["start"], sample["end"])
         frames = extract_frames(
-            sample["video_path"], sample["start"], sample["end"], NUM_FRAMES
+            sample["video_path"], sample["start"], sample["end"], n_frames
         )
         frame_lists.append(frames)
-        metadatas.append(_make_video_metadata(sample["start"], sample["end"], NUM_FRAMES))
+        metadatas.append(_make_video_metadata(sample["start"], sample["end"], n_frames))
 
         messages = [
             {
@@ -365,7 +374,9 @@ def main():
         "model_id":                    args.model,
         "mode":                        mode_tag,
         "lora_rank":                   args.lora_rank if args.lora else None,
-        "num_frames":                  NUM_FRAMES,
+        "frames_per_sec":              FRAMES_PER_SEC,
+        "max_frames":                  MAX_FRAMES,
+        "min_frames":                  MIN_FRAMES,
         "max_train_samples":           args.max_train,
         "num_epochs":                  args.epochs,
         "learning_rate":               args.lr,
