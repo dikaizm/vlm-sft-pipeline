@@ -326,13 +326,13 @@ def main():
                         help="Max training samples (-1 = full dataset)")
     parser.add_argument("--max-val",    type=int, default=-1,
                         help="Max validation samples (-1 = full)")
-    parser.add_argument("--epochs",     type=int, default=3,
-                        help="Training epochs (default: 3)")
-    parser.add_argument("--lr",         type=float, default=2e-5,
-                        help="Learning rate (default: 2e-5)")
-    parser.add_argument("--batch",      type=int, default=1,
+    parser.add_argument("--epochs",     type=int, default=5,
+                        help="Training epochs (default: 5)")
+    parser.add_argument("--lr",         type=float, default=5e-5,
+                        help="Learning rate (default: 5e-5)")
+    parser.add_argument("--batch",      type=int, default=2,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=8,
+    parser.add_argument("--grad-accum", type=int, default=4,
                         help="Gradient accumulation steps")
     parser.add_argument("--data-root",  default=_DATA_ROOT,
                         help="Root directory of dataset")
