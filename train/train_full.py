@@ -406,13 +406,17 @@ def main():
         logger.info("Loading model and processor...")
         processor = AutoProcessor.from_pretrained(args.model)
 
-        # flash_attention_2 requires CUDA + compatible GPU (Ampere+)
-        attn_impl = "flash_attention_2" if torch.cuda.is_bf16_supported() else "eager"
+        # Use flash_attention_2 if package is installed, else sdpa (still fast)
+        try:
+            import flash_attn  # noqa: F401
+            attn_impl = "flash_attention_2" if torch.cuda.is_bf16_supported() else "sdpa"
+        except ImportError:
+            attn_impl = "sdpa"
         logger.info(f"Attention impl: {attn_impl}")
 
         model = AutoModelForImageTextToText.from_pretrained(
             args.model,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             _attn_implementation=attn_impl,
             device_map="auto",
         )
