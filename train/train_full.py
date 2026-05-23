@@ -6,6 +6,7 @@ Supports full fine-tune and LoRA (PEFT). Logs to MLflow.
 Usage:
     # Full fine-tune, 500M, full dataset
     DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/train_full.py
+        --model HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 
     # LoRA, 2.2B
     DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/train_full.py \
