@@ -361,7 +361,7 @@ def main():
     logger.info(f"Train      : {'all' if args.max_train == -1 else args.max_train} samples")
     logger.info(f"Val        : {'all' if args.max_val == -1 else args.max_val} samples")
     logger.info(f"Epochs     : {args.epochs}  LR: {args.lr}  Batch: {args.batch}  GradAccum: {args.grad_accum}")
-    logger.info(f"Frames     : {NUM_FRAMES}  MaxLen: {MAX_LENGTH}")
+    logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  MaxLen: {MAX_LENGTH}")
     logger.info(f"Output     : {output_dir}")
     logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
     logger.info(f"VRAM       : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
