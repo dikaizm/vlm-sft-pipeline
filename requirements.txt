@@ -17,3 +17,4 @@ scipy>=1.10.0
 rouge-score>=0.1.2
 sacrebleu>=2.3.0
 bert-score>=0.3.13
+opencv-python>=4.8.0
