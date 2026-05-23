@@ -275,7 +275,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
     labels[labels == processor.tokenizer.pad_token_id] = -100
     encoded["labels"] = labels
 
-    return {k: v.to(model.device) for k, v in encoded.items()}
+    return dict(encoded)
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +469,7 @@ def main():
             greater_is_better=False,
             save_total_limit=3,
             remove_unused_columns=False,
-            dataloader_num_workers=2,
+            dataloader_num_workers=0,
             report_to="none",
             seed=SEED,
         )
