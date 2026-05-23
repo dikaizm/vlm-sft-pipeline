@@ -410,8 +410,9 @@ def main():
         try:
             import flash_attn  # noqa: F401
             attn_impl = "flash_attention_2"
-        except ImportError:
+        except ImportError as e:
             attn_impl = "sdpa" if torch.cuda.is_bf16_supported() else "eager"
+            logger.warning(f"flash-attn not available ({e}), falling back to {attn_impl}")
         logger.info(f"Attention impl: {attn_impl}")
 
         model = AutoModelForImageTextToText.from_pretrained(
