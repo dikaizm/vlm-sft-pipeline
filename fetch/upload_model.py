@@ -323,6 +323,9 @@ def main():
     args = parser.parse_args()
 
     source = Path(args.source)
+    # Resolve relative paths from pipeline root (vlm-sft-pipeline/), not CWD
+    if not source.is_absolute():
+        source = (_HERE / source).resolve()
     if not source.is_dir():
         sys.exit(f"ERROR: source not found: {source}")
 

@@ -47,12 +47,14 @@ from transformers.video_utils import VideoMetadata
 # Defaults (all overridable via CLI or env)
 # ---------------------------------------------------------------------------
 
+_PIPELINE_ROOT = Path(__file__).parent.parent   # vlm-sft-pipeline/
+
 _DATA_ROOT    = os.environ.get("DATA_ROOT", "./data")
 _VIDEO_ROOT   = f"{_DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 _TRAIN_JSON   = f"{_DATA_ROOT}/UCFCrime_Train.json"
 _VAL_JSON     = f"{_DATA_ROOT}/UCFCrime_Val.json"
-_OUTPUT_DIR   = os.environ.get("OUTPUT_DIR",   "./output/smolvlm2-full-sft")
-_MODEL_ID     = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+_OUTPUT_DIR   = os.environ.get("OUTPUT_DIR", str(_PIPELINE_ROOT / "output" / "smolvlm2-full-sft"))
+_MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
