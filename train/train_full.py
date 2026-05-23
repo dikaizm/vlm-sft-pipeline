@@ -200,10 +200,10 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
         for i in range(n_frames)
     ]
     return VideoMetadata(
-        total_num_frames=max(int(end), n_frames),
+        total_num_frames=n_frames,
         fps=1.0,
-        frames_indices=[int(t) for t in frame_timestamps],
-        duration=float(end),
+        frames_indices=list(range(n_frames)),
+        duration=float(end - start),
     )
 
 
