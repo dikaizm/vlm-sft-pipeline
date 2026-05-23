@@ -49,7 +49,7 @@ from transformers.video_utils import VideoMetadata
 
 _PIPELINE_ROOT = Path(__file__).parent.parent   # vlm-sft-pipeline/
 
-_DATA_ROOT    = os.environ.get("DATA_ROOT", "./data")
+_DATA_ROOT    = os.environ.get("DATA_ROOT", str(_PIPELINE_ROOT / "data"))
 _VIDEO_ROOT   = f"{_DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 _TRAIN_JSON   = f"{_DATA_ROOT}/UCFCrime_Train.json"
 _VAL_JSON     = f"{_DATA_ROOT}/UCFCrime_Val.json"
