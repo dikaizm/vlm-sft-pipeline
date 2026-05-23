@@ -61,9 +61,9 @@ MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.st
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
 
 FRAMES_PER_SEC = 4      # 4 frames per second of clip duration
-MAX_FRAMES     = 32     # cap — limits VRAM / sequence length (500M: 32 fits in 16GB)
+MAX_FRAMES     = 16     # cap — 16 frames × 64 tokens = 1024 visual tokens, leaves room for text
 MIN_FRAMES     = 2      # floor for very short clips
-MAX_LENGTH     = 2048
+MAX_LENGTH     = 4096   # 1024 visual + ~512 text + padding headroom
 SEED        = 42
 
 # ---------------------------------------------------------------------------
