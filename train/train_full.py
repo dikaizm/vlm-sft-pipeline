@@ -247,10 +247,21 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         )
         texts.append(text)
 
+    # Pad all frame lists to same length within batch (duplicate last frame)
+    max_n = max(len(f) for f in frame_lists)
+    frame_lists_padded = [
+        frames + [frames[-1]] * (max_n - len(frames))
+        for frames in frame_lists
+    ]
+    metadatas_padded = [
+        _make_video_metadata(s["start"], s["end"], max_n)
+        for s in batch
+    ]
+
     encoded = processor(
         text=texts,
-        videos=[[frames] for frames in frame_lists],
-        video_metadata=metadatas,
+        videos=[[frames] for frames in frame_lists_padded],
+        video_metadata=metadatas_padded,
         return_tensors="pt",
         padding=True,
         truncation=True,
