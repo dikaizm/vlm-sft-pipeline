@@ -227,8 +227,10 @@ def main():
             mlflow_run = None
 
     # --- Load fine-tuned model ---
+    # Processor may not be in checkpoint dir — fall back to base model
     print(f"Loading fine-tuned model from {args.finetuned} ...")
-    ft_processor = AutoProcessor.from_pretrained(args.finetuned)
+    proc_src = args.finetuned if (Path(args.finetuned) / "tokenizer.json").exists() else MODEL_ID
+    ft_processor = AutoProcessor.from_pretrained(proc_src)
     ft_model     = AutoModelForImageTextToText.from_pretrained(
         args.finetuned, torch_dtype=dtype
     ).to(device)
