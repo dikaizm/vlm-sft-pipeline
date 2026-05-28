@@ -34,7 +34,7 @@ from transformers.video_utils import VideoMetadata
 
 DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
 VIDEO_ROOT    = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-TEST_JSON     = f"{DATA_ROOT}/UCFCrime_Test.json"
+TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/UCFCrime_Test.json")
 
 MODEL_ID      = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-500m-small-sft")
@@ -47,10 +47,7 @@ NUM_FRAMES     = 4
 SEED           = 99   # different from training seed
 MAX_NEW_TOKENS = 128
 
-PROMPT = (
-    "Describe the activity in this surveillance video clip "
-    "and provide the start and end timestamps in seconds."
-)
+PROMPT = "Describe the activity shown in this surveillance video clip."
 
 
 # ---------------------------------------------------------------------------

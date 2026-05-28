@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -61,10 +62,17 @@ MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.st
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
 
 FRAMES_PER_SEC = 4      # 4 frames per second of clip duration
-MAX_FRAMES     = 32     # cap — 32 frames × 64 tokens = 2048 visual tokens, fits in MAX_LENGTH=4096
+MAX_FRAMES     = 32     # frames per sub-clip (32 × 64 tokens = 2048 visual tokens)
 MIN_FRAMES     = 2      # floor for very short clips
-MAX_LENGTH     = 4096   # 1024 visual + ~512 text + padding headroom
-SEED        = 42
+MAX_LENGTH     = 4096   # 2048 visual + ~512 text + padding headroom
+SEG_DURATION   = MAX_FRAMES / FRAMES_PER_SEC  # 8s — long clips segmented into this window
+SEG_STRIDE     = SEG_DURATION * 0.75          # 6s stride = 25% overlap between sub-clips
+SEED           = 42
+
+# Frame cache: extracted JPEG frames stored on disk, keyed by clip hash.
+# Eliminates PyAV video seek/decode on repeated epochs (~4 GB for full dataset).
+# Set to None to disable.
+FRAME_CACHE_DIR = os.environ.get("FRAME_CACHE_DIR", str(_PIPELINE_ROOT / "frame_cache"))
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -103,6 +111,28 @@ class MLflowMetricsCallback(TrainerCallback):
         except Exception as e:
             logging.getLogger("train_full").warning(f"MLflow log_metrics failed (step {step}): {e}")
 
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if not metrics:
+            return
+        step = state.global_step
+        try:
+            mlflow.log_metrics(
+                {k: v for k, v in metrics.items() if isinstance(v, (int, float))},
+                step=step,
+            )
+        except Exception as e:
+            logging.getLogger("train_full").warning(f"MLflow eval metrics failed (step {step}): {e}")
+
+    def on_train_end(self, args, state, control, **kwargs):
+        try:
+            mlflow.log_metrics({
+                "train/best_eval_loss": state.best_metric,
+                "train/total_steps":    state.global_step,
+                "train/total_epochs":   state.epoch,
+            }, step=state.global_step)
+        except Exception as e:
+            logging.getLogger("train_full").warning(f"MLflow train_end metrics failed: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -112,12 +142,37 @@ def _category_from_id(video_id: str) -> str:
     return re.sub(r"\d+_x264$", "", video_id)
 
 
+def _segment_clip(start: float, end: float, sentence: str,
+                  video_path: str) -> list[dict]:
+    """Split annotation clip into SEG_DURATION sub-clips, all sharing the GT sentence.
+    Ensures every frame of every clip goes into training regardless of clip length.
+    """
+    duration = end - start
+    if duration < 0.5:
+        return []
+
+    segments = []
+    seg_start = start
+    while seg_start < end:
+        seg_end = min(seg_start + SEG_DURATION, end)
+        if seg_end - seg_start >= 0.5:
+            segments.append({
+                "video_path": video_path,
+                "start":      float(seg_start),
+                "end":        float(seg_end),
+                "sentence":   sentence,
+            })
+        seg_start += SEG_STRIDE
+    return segments
+
+
 def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dict]:
     with open(json_path) as f:
         data = json.load(f)
 
     items = []
     skipped = 0
+    n_clips = 0
     for video_id, ann in data.items():
         category   = _category_from_id(video_id)
         video_path = os.path.join(video_root, category, f"{video_id}.mp4")
@@ -127,20 +182,14 @@ def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dic
         for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
             if end <= start:
                 continue
-            # Skip clips shorter than 0.5s (sparse keyframe risk)
-            if (end - start) < 0.5:
-                continue
-            items.append({
-                "video_path": video_path,
-                "start":      float(start),
-                "end":        float(end),
-                "sentence":   sentence.strip(),
-            })
+            segs = _segment_clip(float(start), float(end), sentence.strip(), video_path)
+            n_clips += 1
+            items.extend(segs)
 
     random.seed(SEED)
     random.shuffle(items)
     logging.getLogger("train_full").info(
-        f"  {len(items)} clips loaded, {skipped} videos not found"
+        f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
     )
     return items if max_samples == -1 else items[:max_samples]
 
@@ -199,6 +248,34 @@ def extract_frames(video_path: str, start: float, end: float, n_frames: int) -> 
     return [Image.new("RGB", (224, 224), color=0)] * n_frames
 
 
+def _clip_cache_dir(video_path: str, start: float, end: float,
+                    n_frames: int, cache_root: str) -> Path:
+    key = f"{video_path}|{start:.3f}|{end:.3f}|{n_frames}|{FRAMES_PER_SEC}"
+    h   = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return Path(cache_root) / h
+
+
+def load_or_extract_frames(video_path: str, start: float, end: float,
+                            n_frames: int) -> list:
+    """Return PIL frames from JPEG cache if available, else extract and cache."""
+    if not FRAME_CACHE_DIR:
+        return extract_frames(video_path, start, end, n_frames)
+
+    clip_dir = _clip_cache_dir(video_path, start, end, n_frames, FRAME_CACHE_DIR)
+
+    # Cache hit: all N JPEG files present
+    jpegs = sorted(clip_dir.glob("frame_*.jpg"))
+    if len(jpegs) == n_frames:
+        return [Image.open(p).convert("RGB") for p in jpegs]
+
+    # Cache miss: extract then save
+    frames = extract_frames(video_path, start, end, n_frames)
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    for i, img in enumerate(frames):
+        img.save(clip_dir / f"frame_{i:03d}.jpg", quality=90)
+    return frames
+
+
 # ---------------------------------------------------------------------------
 # Collate
 # ---------------------------------------------------------------------------
@@ -223,7 +300,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
 
     for sample in batch:
         n_frames = adaptive_n_frames(sample["start"], sample["end"])
-        frames = extract_frames(
+        frames = load_or_extract_frames(
             sample["video_path"], sample["start"], sample["end"], n_frames
         )
         frame_lists.append(frames)
@@ -339,14 +416,19 @@ def main():
                         help="Max validation samples (-1 = full)")
     parser.add_argument("--epochs",     type=int, default=5,
                         help="Training epochs (default: 5)")
-    parser.add_argument("--lr",         type=float, default=5e-5,
-                        help="Learning rate (default: 5e-5)")
-    parser.add_argument("--batch",      type=int, default=2,
+    parser.add_argument("--lr",         type=float, default=2e-5,
+                        help="Learning rate (default: 2e-5)")
+    parser.add_argument("--batch",      type=int, default=4,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=4,
+    parser.add_argument("--grad-accum", type=int, default=2,
                         help="Gradient accumulation steps")
-    parser.add_argument("--data-root",  default=_DATA_ROOT,
+    parser.add_argument("--data-root",     default=_DATA_ROOT,
                         help="Root directory of dataset")
+    parser.add_argument("--freeze-vision", action="store_true",
+                        help="Freeze vision encoder (default: unfrozen — trains full model)")
+    parser.add_argument("--frame-cache", default=None,
+                        help="Directory to cache extracted JPEG frames (~4 GB for full dataset). "
+                             "Skips PyAV decode on epoch 2+. Also settable via FRAME_CACHE_DIR env.")
     args = parser.parse_args()
 
     assert torch.cuda.is_available(), (
@@ -354,11 +436,21 @@ def main():
         "Check: nvidia-smi"
     )
 
+    # Apply frame cache config (CLI overrides env)
+    global FRAME_CACHE_DIR
+    if args.frame_cache:
+        FRAME_CACHE_DIR = args.frame_cache
+
     video_root = f"{args.data_root}/UCF_Crimes/UCF_Crimes/Videos"
     train_json = f"{args.data_root}/UCFCrime_Train.json"
     val_json   = f"{args.data_root}/UCFCrime_Val.json"
 
-    mode_tag = "lora" if args.lora else "full"
+    if args.lora:
+        mode_tag = "lora"
+    elif args.freeze_vision:
+        mode_tag = "full"
+    else:
+        mode_tag = "full-unfrz"
     model_tag = "500m" if "500M" in args.model or "500m" in args.model else "2b"
     run_name  = f"smolvlm2-{model_tag}-{mode_tag}-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
@@ -372,7 +464,8 @@ def main():
     logger.info(f"Train      : {'all' if args.max_train == -1 else args.max_train} samples")
     logger.info(f"Val        : {'all' if args.max_val == -1 else args.max_val} samples")
     logger.info(f"Epochs     : {args.epochs}  LR: {args.lr}  Batch: {args.batch}  GradAccum: {args.grad_accum}")
-    logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  MaxLen: {MAX_LENGTH}")
+    logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  seg={SEG_DURATION:.1f}s  stride={SEG_STRIDE:.1f}s  MaxLen: {MAX_LENGTH}")
+    logger.info(f"Frame cache: {FRAME_CACHE_DIR or 'disabled'}")
     logger.info(f"Output     : {output_dir}")
     logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
     logger.info(f"VRAM       : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
@@ -397,11 +490,12 @@ def main():
         "effective_batch_size":        eff_batch,
         "max_length":                  MAX_LENGTH,
         "lr_scheduler":                "cosine",
-        "warmup_ratio":                0.03,
+        "warmup_ratio":                0.05,
         "optimizer":                   "adamw_bnb_8bit",
         "precision":                   "bf16",
         "device":                      torch.cuda.get_device_name(0),
         "task":                        "activity_description",
+        "freeze_vision":               args.freeze_vision,
         "seed":                        SEED,
     }
 
@@ -436,9 +530,12 @@ def main():
         if args.lora:
             model = apply_lora(model, args.lora_rank, logger)
         else:
-            # Freeze vision encoder — only fine-tune LLM layers
-            for param in model.model.vision_model.parameters():
-                param.requires_grad = False
+            if args.freeze_vision:
+                for param in model.model.vision_model.parameters():
+                    param.requires_grad = False
+                logger.info("Vision encoder: FROZEN")
+            else:
+                logger.info("Vision encoder: UNFROZEN (full model trains)")
             model.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
@@ -469,7 +566,7 @@ def main():
             num_train_epochs=args.epochs,
             learning_rate=args.lr,
             lr_scheduler_type="cosine",
-            warmup_ratio=0.03,
+            warmup_ratio=0.05,
             optim="adamw_bnb_8bit",
             bf16=True,
             max_grad_norm=1.0,
