@@ -459,14 +459,14 @@ def main():
     if args.lora:
         mode_tag = "lora"
     elif args.freeze_vision:
-        mode_tag = "full"
+        mode_tag = "full-sft"
     else:
-        mode_tag = "full-unfrz"
+        mode_tag = "full-unfrz-sft"
     model_tag = "500m" if "500M" in args.model or "500m" in args.model else "2b"
-    run_name  = f"smolvlm2-{model_tag}-{mode_tag}-sft-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-
     ts = datetime.now().strftime('%Y%m%d-%H%M%S')
-    output_dir = args.output if args.output != _OUTPUT_DIR else f"./output/smolvlm2-{model_tag}-{mode_tag}-sft-{ts}"
+    run_name  = f"smolvlm2-{model_tag}-{mode_tag}-{ts}"
+
+    output_dir = args.output if args.output != _OUTPUT_DIR else f"./output/smolvlm2-{model_tag}-{mode_tag}-{ts}"
     log_file   = os.path.join(output_dir, "logs", f"{run_name}.log")
     logger     = setup_logging(log_file)
 
