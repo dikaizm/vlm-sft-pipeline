@@ -579,7 +579,8 @@ def main():
             greater_is_better=False,
             save_total_limit=3,
             remove_unused_columns=False,
-            dataloader_num_workers=0,
+            dataloader_num_workers=4,
+            dataloader_prefetch_factor=2,
             report_to="none",
             seed=SEED,
         )
