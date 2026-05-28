@@ -618,7 +618,7 @@ def main():
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            save_total_limit=3,
+            save_total_limit=2,
             remove_unused_columns=False,
             dataloader_num_workers=4,
             dataloader_prefetch_factor=2,
