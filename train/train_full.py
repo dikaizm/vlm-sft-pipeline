@@ -578,9 +578,9 @@ def main():
         train_ds = build_dataset(train_json, video_root, args.max_train, logger)
         val_ds   = build_dataset(val_json,   video_root, args.max_val,   logger)
 
-        # Eval every ~10% of training steps, save best checkpoint
+        # Eval every ~20% of training steps, save best checkpoint
         steps_per_epoch = max(1, len(train_ds) // (args.batch * args.grad_accum))
-        eval_steps = max(50, steps_per_epoch // 10)
+        eval_steps = max(50, steps_per_epoch // 5)
         save_steps = eval_steps
 
         logger.info(f"Steps/epoch: {steps_per_epoch}  Eval every: {eval_steps} steps")
@@ -599,7 +599,7 @@ def main():
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=args.batch,
-            per_device_eval_batch_size=1,
+            per_device_eval_batch_size=32,
             gradient_accumulation_steps=args.grad_accum,
             num_train_epochs=args.epochs,
             learning_rate=args.lr,
