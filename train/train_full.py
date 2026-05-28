@@ -440,6 +440,9 @@ def main():
     parser.add_argument("--frame-cache", default=None,
                         help="Directory to cache extracted JPEG frames (~4 GB for full dataset). "
                              "Skips PyAV decode on epoch 2+. Also settable via FRAME_CACHE_DIR env.")
+    parser.add_argument("--resume", default=None,
+                        help="Resume from checkpoint dir (e.g. ./output/.../checkpoint-1072). "
+                             "Optimizer state loaded if present; otherwise resumes from model weights only.")
     args = parser.parse_args()
 
     assert torch.cuda.is_available(), (
@@ -635,8 +638,11 @@ def main():
         )
 
         # --- Train ---
+        resume = args.resume or True  # True = auto-detect last checkpoint in output_dir
+        if args.resume:
+            logger.info(f"Resuming from checkpoint: {args.resume}")
         logger.info("Starting training...")
-        train_result = trainer.train()
+        train_result = trainer.train(resume_from_checkpoint=resume if args.resume else None)
 
         try:
             mlflow.log_metrics({
