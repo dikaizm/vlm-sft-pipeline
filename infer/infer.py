@@ -28,6 +28,48 @@ from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 from transformers.video_utils import VideoMetadata
 
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+def _compute_metrics(predictions: list[str], references: list[str]) -> dict:
+    """Compute BLEU-4, ROUGE-L, and BERTScore (F1) for a list of predictions."""
+    metrics = {}
+
+    # ROUGE-L
+    try:
+        from rouge_score import rouge_scorer
+        scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
+        scores = [scorer.score(ref, pred)["rougeL"].fmeasure
+                  for pred, ref in zip(predictions, references)]
+        metrics["rougeL"] = round(sum(scores) / len(scores), 4)
+    except ImportError:
+        print("[WARN] rouge_score not installed — skipping ROUGE-L. pip install rouge-score")
+
+    # BLEU-4
+    try:
+        from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
+        refs_tok  = [[ref.lower().split()] for ref in references]
+        hyps_tok  = [pred.lower().split() for pred in predictions]
+        smoothie  = SmoothingFunction().method1
+        metrics["bleu4"] = round(corpus_bleu(refs_tok, hyps_tok,
+                                             smoothing_function=smoothie), 4)
+    except ImportError:
+        print("[WARN] nltk not installed — skipping BLEU-4. pip install nltk")
+
+    # BERTScore (optional — skipped if not installed)
+    try:
+        import bert_score
+        P, R, F = bert_score.score(predictions, references,
+                                   lang="en", verbose=False,
+                                   device="cpu")
+        metrics["bertscore_f1"] = round(F.mean().item(), 4)
+    except ImportError:
+        pass  # BERTScore is optional — no warning spam
+
+    return metrics
+
 # ---------------------------------------------------------------------------
 # Config  (all overridable via .env or CLI flags)
 # ---------------------------------------------------------------------------
@@ -285,29 +327,52 @@ def main():
     print(sep)
     print("Done.")
 
+    # --- Compute metrics ---
+    gts = [r["gt"] for r in clip_results]
+
+    ft_metrics = zs_metrics = {}
+    if clip_results:
+        print("\nComputing metrics...")
+        ft_preds   = [r["finetuned"] for r in clip_results]
+        ft_metrics = _compute_metrics(ft_preds, gts)
+        print("  Fine-tuned  :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items()))
+
+        if "zeroshot" in clip_results[0]:
+            zs_preds   = [r["zeroshot"] for r in clip_results]
+            zs_metrics = _compute_metrics(zs_preds, gts)
+            print("  Zero-shot   :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items()))
+
     # --- Save results to JSON ---
     output = {
-        "run_name":     run_name,
-        "finetuned_dir": args.finetuned,
-        "model_id":     MODEL_ID,
-        "n_clips":      len(clip_results),
-        "num_frames":   NUM_FRAMES,
-        "device":       str(device),
-        "clips":        clip_results,
+        "run_name":        run_name,
+        "finetuned_dir":   args.finetuned,
+        "model_id":        MODEL_ID,
+        "n_clips":         len(clip_results),
+        "num_frames":      NUM_FRAMES,
+        "device":          str(device),
+        "metrics": {
+            "finetuned": ft_metrics,
+            "zeroshot":  zs_metrics,
+        },
+        "clips":           clip_results,
     }
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\nResults saved to: {out_path}")
 
-    # --- Log output path to MLflow ---
+    # --- Log to MLflow ---
     if mlflow_run is not None:
         try:
-            mlflow.log_artifact(str(out_path), artifact_path="results")
             mlflow.log_metric("n_clips_inferred", len(clip_results))
+            for k, v in ft_metrics.items():
+                mlflow.log_metric(f"ft/{k}", v)
+            for k, v in zs_metrics.items():
+                mlflow.log_metric(f"zs/{k}", v)
+            mlflow.log_artifact(str(out_path), artifact_path="results")
             mlflow.end_run()
-            print(f"MLflow artifact logged.")
+            print("MLflow metrics and artifact logged.")
         except Exception as e:
-            print(f"[WARN] MLflow artifact log failed: {e}")
+            print(f"[WARN] MLflow log failed: {e}")
             try:
                 mlflow.end_run()
             except Exception:
