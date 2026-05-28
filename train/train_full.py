@@ -98,32 +98,43 @@ def setup_logging(log_path: str) -> logging.Logger:
 
 class MLflowMetricsCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if not logs:
+        if not logs or not state.is_world_process_zero:
             return
         step = state.global_step
-        metrics = {k: v for k, v in logs.items() if isinstance(v, (int, float))}
+        # Prefix train vs eval metrics for clarity in MLflow UI
+        prefixed = {}
+        for k, v in logs.items():
+            if not isinstance(v, (int, float)):
+                continue
+            if k.startswith("eval_"):
+                prefixed[k] = v          # already has eval_ prefix
+            else:
+                prefixed[f"train/{k}"] = v
         logging.getLogger("train_full").info(
             "  ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
-                      for k, v in metrics.items())
+                      for k, v in prefixed.items())
         )
         try:
-            mlflow.log_metrics(metrics, step=step)
+            mlflow.log_metrics(prefixed, step=step, synchronous=False)
         except Exception as e:
             logging.getLogger("train_full").warning(f"MLflow log_metrics failed (step {step}): {e}")
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        if not metrics:
+        if not metrics or not state.is_world_process_zero:
             return
         step = state.global_step
         try:
             mlflow.log_metrics(
                 {k: v for k, v in metrics.items() if isinstance(v, (int, float))},
                 step=step,
+                synchronous=False,
             )
         except Exception as e:
             logging.getLogger("train_full").warning(f"MLflow eval metrics failed (step {step}): {e}")
 
     def on_train_end(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
         try:
             mlflow.log_metrics({
                 "train/best_eval_loss": state.best_metric,
@@ -482,6 +493,8 @@ def main():
         "frames_per_sec":              FRAMES_PER_SEC,
         "max_frames":                  MAX_FRAMES,
         "min_frames":                  MIN_FRAMES,
+        "seg_duration_s":              SEG_DURATION,
+        "seg_stride_s":                SEG_STRIDE,
         "max_train_samples":           args.max_train,
         "num_epochs":                  args.epochs,
         "learning_rate":               args.lr,
@@ -494,8 +507,11 @@ def main():
         "optimizer":                   "adamw_bnb_8bit",
         "precision":                   "bf16",
         "device":                      torch.cuda.get_device_name(0),
+        "vram_gb":                     round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1),
         "task":                        "activity_description",
         "freeze_vision":               args.freeze_vision,
+        "dataloader_workers":          4,
+        "frame_cache":                 bool(FRAME_CACHE_DIR),
         "seed":                        SEED,
     }
 
@@ -519,6 +535,10 @@ def main():
             attn_impl = "sdpa" if torch.cuda.is_bf16_supported() else "eager"
             logger.warning(f"flash-attn not available ({e}), falling back to {attn_impl}")
         logger.info(f"Attention impl: {attn_impl}")
+        try:
+            mlflow.log_param("attn_impl", attn_impl)
+        except Exception:
+            pass
 
         model = AutoModelForImageTextToText.from_pretrained(
             args.model,
@@ -543,6 +563,14 @@ def main():
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.info(f"Params: {total_params/1e6:.0f}M total, {trainable_params/1e6:.1f}M trainable")
+        try:
+            mlflow.log_params({
+                "total_params_m":     round(total_params / 1e6, 1),
+                "trainable_params_m": round(trainable_params / 1e6, 1),
+                "trainable_pct":      round(100 * trainable_params / total_params, 1),
+            })
+        except Exception:
+            pass
 
         # --- Dataset ---
         logger.info("Building datasets...")
@@ -555,6 +583,15 @@ def main():
         save_steps = eval_steps
 
         logger.info(f"Steps/epoch: {steps_per_epoch}  Eval every: {eval_steps} steps")
+        try:
+            mlflow.log_params({
+                "train_samples": len(train_ds),
+                "val_samples":   len(val_ds),
+                "steps_per_epoch": steps_per_epoch,
+                "eval_steps":    eval_steps,
+            })
+        except Exception:
+            pass
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -628,6 +665,24 @@ def main():
             mlflow.log_artifact(log_file, artifact_path="logs")
         except Exception as e:
             logger.warning(f"MLflow artifact log failed: {e}")
+
+        # Log trainer_state.json and training_args as artifacts
+        for artifact_name in ("trainer_state.json", "training_args.bin"):
+            artifact_path = os.path.join(output_dir, artifact_name)
+            if os.path.isfile(artifact_path):
+                try:
+                    mlflow.log_artifact(artifact_path, artifact_path="checkpoints")
+                except Exception as e:
+                    logger.warning(f"MLflow artifact {artifact_name} failed: {e}")
+
+        # Save training_args as JSON for readability
+        try:
+            training_args_json = os.path.join(output_dir, "training_args.json")
+            with open(training_args_json, "w") as f:
+                json.dump(training_args.to_dict(), f, indent=2, default=str)
+            mlflow.log_artifact(training_args_json, artifact_path="checkpoints")
+        except Exception as e:
+            logger.warning(f"MLflow training_args.json failed: {e}")
 
         logger.info(f"Done. Checkpoint: {output_dir}")
 
