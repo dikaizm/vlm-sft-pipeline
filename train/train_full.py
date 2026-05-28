@@ -62,11 +62,11 @@ MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.st
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
 
 FRAMES_PER_SEC = 4      # 4 frames per second of clip duration
-MAX_FRAMES     = 32     # frames per sub-clip (32 × 64 tokens = 2048 visual tokens)
+MAX_FRAMES     = 48     # frames per sub-clip (48 × 64 tokens = 3072 visual tokens; leaves 1024 for text in 4096 ctx)
 MIN_FRAMES     = 2      # floor for very short clips
-MAX_LENGTH     = 4096   # 2048 visual + ~512 text + padding headroom
-SEG_DURATION   = MAX_FRAMES / FRAMES_PER_SEC  # 8s — long clips segmented into this window
-SEG_STRIDE     = SEG_DURATION * 0.75          # 6s stride = 25% overlap between sub-clips
+MAX_LENGTH     = 4096   # 3072 visual + ~512 text + padding headroom
+SEG_DURATION   = MAX_FRAMES / FRAMES_PER_SEC  # 12s — matches dataset median annotation duration (10.9s)
+SEG_STRIDE     = SEG_DURATION * 0.75          # 9s stride = 25% overlap between sub-clips
 SEED           = 42
 
 # Frame cache: extracted JPEG frames stored on disk, keyed by clip hash.
