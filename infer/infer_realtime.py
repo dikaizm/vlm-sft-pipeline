@@ -322,6 +322,8 @@ def main():
                         help="Fine-tuned model dir or HuggingFace model ID")
     parser.add_argument("--camera",       type=int, default=0,
                         help="Camera index (default: 0)")
+    parser.add_argument("--video",        default=None,
+                        help="Path to video file (overrides --camera)")
     parser.add_argument("--n-frames",     type=int, default=4,
                         help="Frames per inference clip (default: 4)")
     parser.add_argument("--clip-seconds", type=float, default=2.0,
@@ -348,13 +350,19 @@ def main():
     model.eval()
     print(f"  Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M\n")
 
-    # Camera
-    cap = cv2.VideoCapture(args.camera)
+    # Camera or video file
+    src = args.video if args.video else args.camera
+    cap = cv2.VideoCapture(src)
     if not cap.isOpened():
-        sys.exit(f"Cannot open camera {args.camera}")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    cap.set(cv2.CAP_PROP_FPS, args.fps)
+        sys.exit(f"Cannot open {'video file: ' + args.video if args.video else 'camera ' + str(args.camera)}")
+    if not args.video:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        cap.set(cv2.CAP_PROP_FPS, args.fps)
+    else:
+        native_fps = cap.get(cv2.CAP_PROP_FPS) or args.fps
+        args.fps = native_fps
+        print(f"Video file: {args.video}  FPS: {native_fps:.1f}")
 
     # Buffer holds enough frames for the rolling clip window
     buf_maxlen = max(args.n_frames * 4, int(args.fps * args.clip_seconds * 2))
@@ -394,6 +402,9 @@ def main():
 
             ret, bgr = cap.read()
             if not ret:
+                if args.video:
+                    print("End of video.")
+                    break
                 print("[WARN] Frame capture failed, retrying...")
                 time.sleep(0.1)
                 continue
