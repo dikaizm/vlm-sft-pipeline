@@ -235,7 +235,14 @@ def main():
     dtype  = torch.float32 if device.type == "mps" else torch.bfloat16
     print(f"Device: {device}  dtype: {dtype}\n")
 
-    run_name = f"infer-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    # Build run name from finetuned path: <parent-dir>-<checkpoint-dir>
+    ft_path   = Path(args.finetuned).resolve()
+    ckpt_part = ft_path.name          # e.g. checkpoint-1330
+    base_part = ft_path.parent.name   # e.g. smolvlm2-500m-full-unfrz-sft-20260528-232935
+    if ckpt_part.startswith("checkpoint-"):
+        run_name = f"{base_part}-{ckpt_part}"
+    else:
+        run_name = base_part  # finetuned dir IS the model dir (no checkpoint subdir)
 
     # Resolve output path
     if args.output:
