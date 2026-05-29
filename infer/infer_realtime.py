@@ -320,6 +320,8 @@ def main():
     parser = argparse.ArgumentParser(description="Realtime surveillance with SmolVLM2")
     parser.add_argument("--model",        required=True,
                         help="Fine-tuned model dir or HuggingFace model ID")
+    parser.add_argument("--base-model",   default="HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+                        help="Base model ID for processor if checkpoint has none")
     parser.add_argument("--camera",       type=int, default=0,
                         help="Camera index (default: 0)")
     parser.add_argument("--video",        default=None,
@@ -343,7 +345,8 @@ def main():
 
     # Load model
     print("Loading model...")
-    processor = AutoProcessor.from_pretrained(args.model)
+    proc_src  = args.model if (Path(args.model) / "preprocessor_config.json").exists() else args.base_model
+    processor = AutoProcessor.from_pretrained(proc_src)
     model     = AutoModelForImageTextToText.from_pretrained(
         args.model, torch_dtype=dtype
     ).to(device)
