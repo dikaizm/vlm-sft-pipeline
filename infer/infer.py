@@ -398,17 +398,29 @@ def main():
         json.dump(output, f, indent=2)
     print(f"\nResults saved to: {out_path}")
 
-    # --- Log to MLflow ---
+    # --- Log to MLflow (parent + nested child runs) ---
     if mlflow_run is not None:
         try:
-            mlflow.log_metric("n_clips_inferred", len(clip_results))
-            for k, v in ft_metrics.items():
-                mlflow.log_metric(f"{k}/ft", v)
-            for k, v in zs_metrics.items():
-                mlflow.log_metric(f"{k}/zs", v)
-            mlflow.log_artifact(str(out_path), artifact_path="results")
-            mlflow.end_run()
-            print("MLflow metrics and artifact logged.")
+            import mlflow as _mlflow
+            # Parent: summary params + artifact
+            _mlflow.log_metric("n_clips_inferred", len(clip_results))
+            _mlflow.log_artifact(str(out_path), artifact_path="results")
+
+            # Child run: fine-tuned metrics
+            with _mlflow.start_run(run_name="finetuned", nested=True,
+                                   tags={"type": "finetuned"}):
+                _mlflow.log_params({"model": args.finetuned, "n_clips": len(clip_results)})
+                _mlflow.log_metrics(ft_metrics)
+
+            # Child run: zero-shot metrics
+            if zs_metrics:
+                with _mlflow.start_run(run_name="zero-shot", nested=True,
+                                       tags={"type": "zero-shot"}):
+                    _mlflow.log_params({"model": MODEL_ID, "n_clips": len(clip_results)})
+                    _mlflow.log_metrics(zs_metrics)
+
+            _mlflow.end_run()
+            print("MLflow nested runs logged.")
         except Exception as e:
             print(f"[WARN] MLflow log failed: {e}")
             try:
