@@ -106,7 +106,7 @@ def run_inference(model, processor, device, frames: list[Image.Image],
 
     inputs = processor(
         text=[text],
-        videos=[frames],
+        videos=[[frames]],
         video_metadata=[metadata],
         return_tensors="pt",
         padding=True,
