@@ -82,6 +82,12 @@ MODEL_ID      = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Vide
 FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-500m-small-sft")
 OUTPUT_DIR    = os.environ.get("OUTPUT_DIR",    "./output/smolvlm2-500m-small-sft")
 
+# Official UCF-Crime anomaly detection split — used to prevent leakage from train videos
+ANOMALY_TEST_SPLIT = os.environ.get(
+    "ANOMALY_TEST_SPLIT",
+    f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Anomaly_Detection_splits/Anomaly_Test.txt",
+)
+
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
 
@@ -108,12 +114,34 @@ def _category_from_id(video_id: str) -> str:
     return re.sub(r"\d+_x264$", "", video_id)
 
 
+def _load_anomaly_test_ids() -> set[str]:
+    """Load official Anomaly_Test.txt split — returns set of video_ids without extension."""
+    if not os.path.isfile(ANOMALY_TEST_SPLIT):
+        print(f"[WARN] Anomaly_Test.txt not found at {ANOMALY_TEST_SPLIT} — no leakage filter applied")
+        return set()
+    with open(ANOMALY_TEST_SPLIT) as f:
+        ids = set()
+        for line in f:
+            line = line.strip()
+            if line:
+                # Format: Category/VideoName.mp4
+                ids.add(line.split("/")[-1].replace(".mp4", ""))
+    print(f"  Anomaly_Test.txt: {len(ids)} official test videos loaded")
+    return ids
+
+
 def load_test_samples(n: int) -> list[dict]:
     with open(TEST_JSON) as f:
         data = json.load(f)
 
+    allowed_ids = _load_anomaly_test_ids()
+
     items = []
+    skipped_leakage = 0
     for video_id, ann in data.items():
+        if allowed_ids and video_id not in allowed_ids:
+            skipped_leakage += 1
+            continue
         category   = _category_from_id(video_id)
         video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
         if not os.path.isfile(video_path):
@@ -128,6 +156,9 @@ def load_test_samples(n: int) -> list[dict]:
                 "end":        float(end),
                 "gt":         sentence.strip(),
             })
+
+    if skipped_leakage:
+        print(f"  Filtered {skipped_leakage} videos present in training split (leakage prevention)")
 
     random.seed(SEED)
     random.shuffle(items)
