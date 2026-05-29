@@ -403,9 +403,9 @@ def main():
         try:
             mlflow.log_metric("n_clips_inferred", len(clip_results))
             for k, v in ft_metrics.items():
-                mlflow.log_metric(f"ft/{k}", v)
+                mlflow.log_metric(f"{k}/ft", v)
             for k, v in zs_metrics.items():
-                mlflow.log_metric(f"zs/{k}", v)
+                mlflow.log_metric(f"{k}/zs", v)
             mlflow.log_artifact(str(out_path), artifact_path="results")
             mlflow.end_run()
             print("MLflow metrics and artifact logged.")
