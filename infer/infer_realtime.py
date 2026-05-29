@@ -223,6 +223,12 @@ class InferenceWorker(threading.Thread):
             latency = time.time() - t0
             is_anomaly, category = detect_anomaly(desc)
 
+            # Delay publishing result until the clip window has elapsed on screen
+            # so caption syncs with the action rather than appearing before it
+            elapsed = time.time() - t0
+            wait = max(0.0, self.clip_duration - elapsed)
+            time.sleep(wait)
+
             # Drain old results, keep queue fresh
             while not self.result_queue.empty():
                 try:
@@ -237,9 +243,6 @@ class InferenceWorker(threading.Thread):
                 "latency":     latency,
                 "timestamp":   datetime.now().strftime("%H:%M:%S"),
             })
-
-            # Wait before next inference cycle
-            time.sleep(self.clip_duration)
 
 
 # ---------------------------------------------------------------------------
