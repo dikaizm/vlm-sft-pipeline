@@ -240,9 +240,9 @@ def main():
     ckpt_part = ft_path.name          # e.g. checkpoint-1330
     base_part = ft_path.parent.name   # e.g. smolvlm2-500m-full-unfrz-sft-20260528-232935
     if ckpt_part.startswith("checkpoint-"):
-        run_name = f"{base_part}-{ckpt_part}"
+        run_name = f"infer-{base_part}-{ckpt_part}"
     else:
-        run_name = base_part  # finetuned dir IS the model dir (no checkpoint subdir)
+        run_name = f"infer-{base_part}"  # finetuned dir IS the model dir (no checkpoint subdir)
 
     # Resolve output path
     if args.output:
