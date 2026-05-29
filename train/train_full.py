@@ -197,10 +197,15 @@ def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dic
             n_clips += 1
             items.extend(segs)
 
+    # Oversample crime clips 3× to reduce normal/person-walking dominance
+    crime_normal = [it for it in items if "Normal" not in it["video_path"]]
+    normal_items = [it for it in items if "Normal" in it["video_path"]]
+    items = crime_normal * 3 + normal_items
+
     random.seed(SEED)
     random.shuffle(items)
     logging.getLogger("train_full").info(
-        f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
+        f"  {n_clips} annotations → {len(items)} sub-clips after 3× crime oversample, {skipped} videos not found"
     )
     return items if max_samples == -1 else items[:max_samples]
 

@@ -242,7 +242,10 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
         out_ids = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            repetition_penalty=1.3,
         )
 
     new_tokens = out_ids[:, inputs["input_ids"].shape[1]:]
