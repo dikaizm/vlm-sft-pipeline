@@ -512,9 +512,9 @@ def main():
                         help="Training epochs (default: 3)")
     parser.add_argument("--lr",         type=float, default=2e-5,
                         help="Learning rate (default: 2e-5)")
-    parser.add_argument("--batch",      type=int, default=16,
+    parser.add_argument("--batch",      type=int, default=8,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=2,
+    parser.add_argument("--grad-accum", type=int, default=4,
                         help="Gradient accumulation steps")
     parser.add_argument("--data-root",     default=_DATA_ROOT,
                         help="Root directory of dataset")
