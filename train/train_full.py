@@ -749,7 +749,7 @@ def main():
 
         # Eval every ~20% of training steps, save best checkpoint
         steps_per_epoch = max(1, len(train_ds) // (args.batch * args.grad_accum))
-        eval_steps = args.eval_steps if args.eval_steps else max(50, min(100, steps_per_epoch // 5))
+        eval_steps = args.eval_steps if args.eval_steps else min(steps_per_epoch, 100)
         save_steps = eval_steps
 
         logger.info(f"Steps/epoch: {steps_per_epoch}  Eval every: {eval_steps} steps")
