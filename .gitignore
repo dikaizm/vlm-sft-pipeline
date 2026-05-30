@@ -7,3 +7,4 @@ data/
 ssh/
 data/
 .DS_Store
+frame_cache/
