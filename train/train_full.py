@@ -506,8 +506,8 @@ def main():
                         help="LoRA rank (default: 16)")
     parser.add_argument("--max-train",  type=int, default=-1,
                         help="Max training samples (-1 = full dataset)")
-    parser.add_argument("--max-val",    type=int, default=-1,
-                        help="Max validation samples (-1 = full)")
+    parser.add_argument("--max-val",    type=int, default=300,
+                        help="Max validation samples (default: 300 for speed; -1 = full 2528)")
     parser.add_argument("--epochs",     type=int, default=3,
                         help="Training epochs (default: 3)")
     parser.add_argument("--lr",         type=float, default=2e-5,
