@@ -743,6 +743,7 @@ def main():
             dataloader_num_workers=4,
             dataloader_prefetch_factor=2,
             report_to="none",
+            disable_tqdm=False,
             seed=SEED,
         )
 
