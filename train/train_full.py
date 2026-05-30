@@ -573,9 +573,8 @@ def main():
     parser.add_argument("--eval-steps", type=int, default=None,
                         help="Override eval/save interval (steps). Default: max(50, steps_per_epoch//5). "
                              "Use a small value (e.g. 5) for local smoke tests.")
-    parser.add_argument("--grad-checkpoint", action="store_true",
-                        help="Enable gradient checkpointing (saves VRAM at cost of ~20%% slower training). "
-                             "Not needed on high-VRAM GPUs like B200 (191 GB).")
+    parser.add_argument("--no-grad-checkpoint", action="store_true",
+                        help="Disable gradient checkpointing. Only use on GPUs with extreme VRAM (>400 GB).")
     parser.add_argument("--force-cpu", action="store_true",
                         help="Force CPU training (disables MPS). Slow but avoids MPS OOM on local Mac.")
     parser.add_argument("--train-json", default=None,
@@ -723,13 +722,13 @@ def main():
                 logger.info("Vision encoder: FROZEN")
             else:
                 logger.info("Vision encoder: UNFROZEN (full model trains)")
-            if torch.cuda.is_available() and args.grad_checkpoint:
+            if torch.cuda.is_available() and not args.no_grad_checkpoint:
                 model.gradient_checkpointing_enable(
                     gradient_checkpointing_kwargs={"use_reentrant": False}
                 )
-                logger.info("Gradient checkpointing: ENABLED (saves memory, slower)")
+                logger.info("Gradient checkpointing: ENABLED")
             elif torch.cuda.is_available():
-                logger.info("Gradient checkpointing: DISABLED (faster on high-VRAM GPU)")
+                logger.info("Gradient checkpointing: DISABLED (--no-grad-checkpoint)")
 
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
