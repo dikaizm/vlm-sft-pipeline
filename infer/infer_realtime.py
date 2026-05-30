@@ -87,8 +87,8 @@ def run_inference(model, processor, device, frames: list[Image.Image],
             "content": [
                 {"type": "video"},
                 {"type": "text", "text": (
-                    "Describe the activity in this surveillance video clip. "
-                    "End your answer with the activity class in square brackets, e.g. [Normal] or [Robbery]. "
+                    "Classify and describe this surveillance video clip. "
+                    "Start with [ClassName], then describe the activity. "
                     "Classes: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
                     "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
                 )},
@@ -128,10 +128,9 @@ def run_inference(model, processor, device, frames: list[Image.Image],
 # ---------------------------------------------------------------------------
 
 def parse_class(text: str) -> str:
-    """Extract last valid [ClassName] from VLM output. Returns 'Unknown' if not found."""
+    """Extract first valid [ClassName] from VLM output. Returns 'Unknown' if not found."""
     import re
-    matches = re.findall(r'\[(\w+)\]', text)
-    for m in reversed(matches):
+    for m in re.findall(r'\[(\w+)\]', text):
         if m in UCF_CLASSES:
             return m
     return "Unknown"

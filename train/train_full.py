@@ -69,8 +69,8 @@ UCF_CLASSES = frozenset([
 ])
 
 PROMPT = (
-    "Describe the activity in this surveillance video clip. "
-    "End your answer with the activity class in square brackets, e.g. [Normal] or [Robbery]. "
+    "Classify and describe this surveillance video clip. "
+    "Start with [ClassName], then describe the activity. "
     "Classes: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
     "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
 )
@@ -90,6 +90,10 @@ FRAME_CACHE_DIR = os.environ.get("FRAME_CACHE_DIR", str(_PIPELINE_ROOT / "frame_
 
 # Crime weight: multiplier applied to loss on crime-class samples (set from --crime-weight arg)
 CRIME_WEIGHT = 3.0
+
+# Per-token weight on [ClassName] bracket tokens — boosts gradient signal for classification.
+# Counteracts gradient dilution: class is ~4 tokens vs ~50 description tokens in a typical GT.
+CLASS_TOKEN_WEIGHT = 5.0
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -167,21 +171,24 @@ class MLflowMetricsCallback(TrainerCallback):
 # ---------------------------------------------------------------------------
 
 class SurveillanceTrainer(Trainer):
-    """Trainer with per-sample crime weighting.
+    """Trainer with per-sample crime weighting + per-token class-bracket weighting.
 
-    Batch must contain a float tensor 'sample_weight' [B] where crime clips
-    carry a higher weight than Normal clips. Recomputes loss from logits
-    instead of using model's averaged loss.
+    Batch must contain:
+      - 'sample_weight' [B]: crime clips weighted higher than Normal
+      - 'token_weight'  [B, T]: [ClassName] bracket tokens weighted higher (counteracts
+        gradient dilution where class is ~4 tokens vs ~50 description tokens)
 
-    Matches Idefics3/SmolVLM2 internal loss formulation:
+    Loss formulation (matches Idefics3/SmolVLM2 internal shift):
       - Left-shift by 1 for next-token prediction
       - Ignore positions where label == -100 (system/user tokens, padding)
-    Per-sample loss is mean over that sample's valid tokens; batch loss is
-    weighted mean over samples.
+      - Per-token CE × token_weight × valid_mask
+      - Per-sample loss = weighted mean over valid tokens
+      - Batch loss     = sample_weight-weighted mean over samples
     """
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        weights = inputs.pop("sample_weight", None)
+        weights      = inputs.pop("sample_weight", None)
+        token_weight = inputs.pop("token_weight",  None)
         outputs = model(**inputs)
 
         if weights is None:
@@ -201,6 +208,12 @@ class SurveillanceTrainer(Trainer):
             ).view(shift_logits.size(0), -1)                  # [B, T-1]
 
             mask = (shift_labels != -100).float()
+
+            # Per-token weight: class bracket tokens get CLASS_TOKEN_WEIGHT, others 1.0
+            if token_weight is not None:
+                shift_tw = token_weight[..., 1:].to(per_token.device)
+                mask = mask * shift_tw
+
             denom = mask.sum(-1).clamp(min=1)
             per_sample = (per_token * mask).sum(-1) / denom   # [B]
 
@@ -391,7 +404,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         metadatas.append(_make_video_metadata(sample["start"], sample["end"], n_frames))
 
         cls = sample.get("class", "Normal")
-        gt  = f"{sample['sentence']} [{cls}]"
+        gt  = f"[{cls}] {sample['sentence']}"
 
         messages = [
             {
@@ -433,6 +446,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
     )
 
     labels = encoded["input_ids"].clone()
+    split_positions: list[int | None] = []
 
     assistant_token = processor.tokenizer.encode("Assistant:", add_special_tokens=False)
     for i, ids in enumerate(labels):
@@ -442,6 +456,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
             if ids_list[j : j + len(assistant_token)] == assistant_token:
                 split_pos = j + len(assistant_token) + 1
                 break
+        split_positions.append(split_pos)
         if split_pos is not None:
             labels[i, :split_pos] = -100
         else:
@@ -449,6 +464,29 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
 
     labels[labels == processor.tokenizer.pad_token_id] = -100
     encoded["labels"] = labels
+
+    # Per-token weight: upweight [ClassName] bracket tokens (first tokens of GT in class-first format)
+    token_weight = torch.ones_like(labels, dtype=torch.float32)
+    for i, sample in enumerate(batch):
+        sp = split_positions[i]
+        if sp is None:
+            continue
+        cls = sample.get("class", "Normal")
+        class_ids = processor.tokenizer.encode(f"[{cls}]", add_special_tokens=False)
+        ids_list  = encoded["input_ids"][i].tolist()
+        # Search for the exact [ClassName] token sequence within a small window after split_pos
+        # (chat template may insert a leading space token)
+        match_pos = None
+        for offset in range(4):
+            pos = sp + offset
+            if pos + len(class_ids) <= len(ids_list) and ids_list[pos : pos + len(class_ids)] == class_ids:
+                match_pos = pos
+                break
+        if match_pos is None:
+            match_pos = sp  # fallback: weight the first N tokens of GT
+        end_pos = min(match_pos + len(class_ids), labels.shape[1])
+        token_weight[i, match_pos:end_pos] = float(CLASS_TOKEN_WEIGHT)
+    encoded["token_weight"] = token_weight
 
     # Per-sample weight: crime clips weighted higher than Normal
     weights = []
@@ -512,9 +550,9 @@ def main():
                         help="Training epochs (default: 3)")
     parser.add_argument("--lr",         type=float, default=2e-5,
                         help="Learning rate (default: 2e-5)")
-    parser.add_argument("--batch",      type=int, default=8,
+    parser.add_argument("--batch",      type=int, default=32,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=4,
+    parser.add_argument("--grad-accum", type=int, default=1,
                         help="Gradient accumulation steps")
     parser.add_argument("--data-root",     default=_DATA_ROOT,
                         help="Root directory of dataset")
@@ -529,9 +567,15 @@ def main():
     parser.add_argument("--crime-weight", type=float, default=3.0,
                         help="Loss multiplier for crime-class samples vs Normal (default: 3.0). "
                              "Set to 1.0 to disable weighting.")
+    parser.add_argument("--class-token-weight", type=float, default=5.0,
+                        help="Per-token loss multiplier for [ClassName] bracket tokens (default: 5.0). "
+                             "Set to 1.0 to disable.")
     parser.add_argument("--eval-steps", type=int, default=None,
                         help="Override eval/save interval (steps). Default: max(50, steps_per_epoch//5). "
                              "Use a small value (e.g. 5) for local smoke tests.")
+    parser.add_argument("--grad-checkpoint", action="store_true",
+                        help="Enable gradient checkpointing (saves VRAM at cost of ~20%% slower training). "
+                             "Not needed on high-VRAM GPUs like B200 (191 GB).")
     parser.add_argument("--force-cpu", action="store_true",
                         help="Force CPU training (disables MPS). Slow but avoids MPS OOM on local Mac.")
     parser.add_argument("--train-json", default=None,
@@ -551,10 +595,11 @@ def main():
               "For full training use a CUDA GPU.")
 
     # Apply frame cache config (CLI overrides env)
-    global FRAME_CACHE_DIR, CRIME_WEIGHT
+    global FRAME_CACHE_DIR, CRIME_WEIGHT, CLASS_TOKEN_WEIGHT
     if args.frame_cache:
         FRAME_CACHE_DIR = args.frame_cache
-    CRIME_WEIGHT = args.crime_weight
+    CRIME_WEIGHT       = args.crime_weight
+    CLASS_TOKEN_WEIGHT = args.class_token_weight
 
     video_root = f"{args.data_root}/UCF_Crimes/UCF_Crimes/Videos"
     train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_deepseek_v4_pro.json"
@@ -583,6 +628,7 @@ def main():
     logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  seg={SEG_DURATION:.1f}s  stride={SEG_STRIDE:.1f}s  MaxLen: {MAX_LENGTH}")
     logger.info(f"Frame cache: {FRAME_CACHE_DIR or 'disabled'}")
     logger.info(f"Crime weight: {args.crime_weight}x (Normal=1.0)")
+    logger.info(f"Class-token weight: {args.class_token_weight}x ([ClassName] bracket tokens)")
     logger.info(f"Output     : {output_dir}")
     if torch.cuda.is_available():
         logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
@@ -625,6 +671,7 @@ def main():
         "frame_cache":                 bool(FRAME_CACHE_DIR),
         "seed":                        SEED,
         "crime_weight":                args.crime_weight,
+        "class_token_weight":          args.class_token_weight,
     }
 
     run = mlflow.start_run(run_name=run_name)
@@ -676,10 +723,13 @@ def main():
                 logger.info("Vision encoder: FROZEN")
             else:
                 logger.info("Vision encoder: UNFROZEN (full model trains)")
-            if torch.cuda.is_available():
+            if torch.cuda.is_available() and args.grad_checkpoint:
                 model.gradient_checkpointing_enable(
                     gradient_checkpointing_kwargs={"use_reentrant": False}
                 )
+                logger.info("Gradient checkpointing: ENABLED (saves memory, slower)")
+            elif torch.cuda.is_available():
+                logger.info("Gradient checkpointing: DISABLED (faster on high-VRAM GPU)")
 
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -700,7 +750,7 @@ def main():
 
         # Eval every ~20% of training steps, save best checkpoint
         steps_per_epoch = max(1, len(train_ds) // (args.batch * args.grad_accum))
-        eval_steps = args.eval_steps if args.eval_steps else max(50, steps_per_epoch // 5)
+        eval_steps = args.eval_steps if args.eval_steps else max(50, min(100, steps_per_epoch // 5))
         save_steps = eval_steps
 
         logger.info(f"Steps/epoch: {steps_per_epoch}  Eval every: {eval_steps} steps")
@@ -721,7 +771,7 @@ def main():
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=args.batch,
-            per_device_eval_batch_size=32,
+            per_device_eval_batch_size=128,
             gradient_accumulation_steps=args.grad_accum,
             num_train_epochs=args.epochs,
             learning_rate=args.lr,

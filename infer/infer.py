@@ -33,7 +33,48 @@ from transformers.video_utils import VideoMetadata
 # Metrics
 # ---------------------------------------------------------------------------
 
-def _compute_metrics(predictions: list[str], references: list[str]) -> dict:
+class ClassFirstLogitsProcessor:
+    """Constrain first generated tokens to a valid [ClassName] sequence."""
+
+    def __init__(self, valid_class_seqs: list[list[int]], prompt_length: int):
+        self.seqs = valid_class_seqs
+        self.prompt_len = prompt_length
+        self.max_prefix_len = max(len(s) for s in valid_class_seqs)
+
+    def __call__(self, input_ids: "torch.LongTensor", scores: "torch.FloatTensor") -> "torch.FloatTensor":
+        gen_pos = input_ids.shape[1] - self.prompt_len
+        if gen_pos >= self.max_prefix_len:
+            return scores
+
+        valid_ids: set[int] = set()
+        for seq in self.seqs:
+            if gen_pos >= len(seq):
+                continue
+            if gen_pos == 0 or all(
+                input_ids[0, self.prompt_len + i].item() == seq[i]
+                for i in range(gen_pos)
+            ):
+                valid_ids.add(seq[gen_pos])
+
+        if valid_ids:
+            mask = torch.full_like(scores, float("-inf"))
+            for vid in valid_ids:
+                mask[:, vid] = 0.0
+            scores = scores + mask
+
+        return scores
+
+
+def _build_class_logits_processor(processor, prompt_length: int):
+    """Pre-tokenize all [ClassName] strings and return a ClassFirstLogitsProcessor."""
+    seqs = []
+    for cls in sorted(UCF_CLASSES):
+        ids = processor.tokenizer.encode(f"[{cls}]", add_special_tokens=False)
+        seqs.append(ids)
+    return ClassFirstLogitsProcessor(seqs, prompt_length)
+
+
+def _compute_caption_metrics(predictions: list[str], references: list[str]) -> dict:
     """Compute BLEU-4, ROUGE-L, and BERTScore (F1) for a list of predictions."""
     metrics = {}
 
@@ -70,6 +111,48 @@ def _compute_metrics(predictions: list[str], references: list[str]) -> dict:
 
     return metrics
 
+
+def _compute_cls_metrics(pred_classes: list[str], gt_classes: list[str]) -> dict:
+    """Classification metrics: accuracy, F1 macro/weighted, precision, recall (14-class + binary)."""
+    try:
+        from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+    except ImportError:
+        print("[WARN] scikit-learn not installed — skipping classification metrics. pip install scikit-learn")
+        return {}
+
+    metrics = {}
+
+    # Unknown rate (model failed to output a valid class tag)
+    metrics["unknown_rate"] = round(
+        sum(p == "Unknown" for p in pred_classes) / max(len(pred_classes), 1), 4
+    )
+
+    # Filter to samples where GT class is known
+    pairs = [(p, g) for p, g in zip(pred_classes, gt_classes) if g != "Unknown"]
+    if not pairs:
+        return metrics
+
+    preds, gts = zip(*pairs)
+    all_labels = sorted(UCF_CLASSES)
+
+    # 14-class multiclass (Unknown pred counts as wrong)
+    metrics["cls_accuracy"]    = round(accuracy_score(gts, preds), 4)
+    metrics["f1_macro"]        = round(f1_score(gts, preds, average="macro",    zero_division=0, labels=all_labels), 4)
+    metrics["f1_weighted"]     = round(f1_score(gts, preds, average="weighted", zero_division=0, labels=all_labels), 4)
+    metrics["precision_macro"] = round(precision_score(gts, preds, average="macro", zero_division=0, labels=all_labels), 4)
+    metrics["recall_macro"]    = round(recall_score(gts, preds, average="macro",    zero_division=0, labels=all_labels), 4)
+
+    # Binary: Normal=0, Anomaly=1 (Unknown pred → 0, conservative: didn't flag anomaly)
+    b_gts   = [0 if g == "Normal" else 1 for g in gts]
+    b_preds = [0 if p in ("Normal", "Unknown") else 1 for p in preds]
+
+    metrics["binary_accuracy"]  = round(accuracy_score(b_gts, b_preds), 4)
+    metrics["binary_f1"]        = round(f1_score(b_gts, b_preds, average="binary", zero_division=0), 4)
+    metrics["binary_precision"] = round(precision_score(b_gts, b_preds, average="binary", zero_division=0), 4)
+    metrics["binary_recall"]    = round(recall_score(b_gts, b_preds, average="binary", zero_division=0), 4)
+
+    return metrics
+
 # ---------------------------------------------------------------------------
 # Config  (all overridable via .env or CLI flags)
 # ---------------------------------------------------------------------------
@@ -102,17 +185,16 @@ UCF_CLASSES = frozenset([
 ])
 
 PROMPT = (
-    "Describe the activity in this surveillance video clip. "
-    "End your answer with the activity class in square brackets, e.g. [Normal] or [Robbery]. "
+    "Classify and describe this surveillance video clip. "
+    "Start with [ClassName], then describe the activity. "
     "Classes: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
     "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
 )
 
 
 def parse_class(text: str) -> str:
-    """Extract last valid [ClassName] from VLM output. Returns 'Unknown' if not found."""
-    matches = re.findall(r'\[(\w+)\]', text)
-    for m in reversed(matches):
+    """Extract first valid [ClassName] from VLM output. Returns 'Unknown' if not found."""
+    for m in re.findall(r'\[(\w+)\]', text):
         if m in UCF_CLASSES:
             return m
     return "Unknown"
@@ -243,7 +325,8 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 
 def run_inference(model, processor, device, frames: list, start: float, end: float, prompt: str,
                   do_sample: bool = False, temperature: float = 0.7,
-                  top_p: float = 0.9, repetition_penalty: float = 1.0) -> str:
+                  top_p: float = 0.9, repetition_penalty: float = 1.0,
+                  constrained: bool = False) -> str:
     messages = [
         {
             "role": "user",
@@ -271,6 +354,9 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
     if do_sample:
         gen_kwargs.update({"do_sample": True, "temperature": temperature,
                            "top_p": top_p, "repetition_penalty": repetition_penalty})
+    if constrained:
+        prompt_length = inputs["input_ids"].shape[1]
+        gen_kwargs["logits_processor"] = [_build_class_logits_processor(processor, prompt_length)]
 
     with torch.no_grad():
         out_ids = model.generate(**inputs, **gen_kwargs)
@@ -294,6 +380,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.7,        help="Sampling temperature (default: 0.7, only used with --sample)")
     parser.add_argument("--top-p",       type=float, default=0.9,        help="Top-p nucleus sampling (default: 0.9, only used with --sample)")
     parser.add_argument("--rep-penalty", type=float, default=1.0,        help="Repetition penalty (default: 1.0 = off)")
+    parser.add_argument("--constrained", action="store_true",            help="Constrain first tokens to valid [ClassName] (class-first model only)")
     args = parser.parse_args()
 
     device = get_device()
@@ -387,20 +474,21 @@ def main():
         print(f"  GT class: {record['gt_class']}")
 
         infer_kwargs = dict(do_sample=args.sample, temperature=args.temperature,
-                            top_p=args.top_p, repetition_penalty=args.rep_penalty)
+                            top_p=args.top_p, repetition_penalty=args.rep_penalty,
+                            constrained=args.constrained)
 
         if zs_model is not None:
             zs_out = run_inference(zs_model, zs_processor, device, frames, s["start"], s["end"], PROMPT,
                                    **infer_kwargs)
             zs_cls = parse_class(zs_out)
-            print(f"  ZeroShot : {zs_out}  → [{zs_cls}]")
+            print(f"  ZeroShot : {zs_out}")
             record["zeroshot"]       = zs_out
             record["zeroshot_class"] = zs_cls
 
         ft_out = run_inference(ft_model, ft_processor, device, frames, s["start"], s["end"], PROMPT,
                                **infer_kwargs)
         ft_cls = parse_class(ft_out)
-        print(f"  FineTuned: {ft_out}  → [{ft_cls}]")
+        print(f"  FineTuned: {ft_out}")
         record["finetuned"]       = ft_out
         record["finetuned_class"] = ft_cls
 
@@ -413,29 +501,29 @@ def main():
     # --- Compute metrics ---
     gts = [r["gt"] for r in clip_results]
 
-    def _cls_accuracy(pred_classes: list[str], gt_classes: list[str]) -> float:
-        if not gt_classes or all(c == "Unknown" for c in gt_classes):
-            return 0.0
-        valid = [(p, g) for p, g in zip(pred_classes, gt_classes) if g != "Unknown"]
-        return round(sum(p == g for p, g in valid) / len(valid), 4) if valid else 0.0
-
     ft_metrics = zs_metrics = {}
     if clip_results:
         print("\nComputing metrics...")
+        gt_classes = [r["gt_class"] for r in clip_results]
+
         ft_preds   = [r["finetuned"] for r in clip_results]
-        ft_metrics = _compute_metrics(ft_preds, gts)
-        ft_cls_acc = _cls_accuracy([r["finetuned_class"] for r in clip_results],
-                                   [r["gt_class"] for r in clip_results])
-        ft_metrics["cls_accuracy"] = ft_cls_acc
-        print("  Fine-tuned  :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items()))
+        ft_metrics = _compute_caption_metrics(ft_preds, gts)
+        ft_metrics.update(_compute_cls_metrics([r["finetuned_class"] for r in clip_results], gt_classes))
+        print("  Fine-tuned  :")
+        print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("bleu4", "rougeL", "bertscore_f1")))
+        print("    Cls 14  :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("cls_accuracy", "f1_macro", "f1_weighted", "precision_macro", "recall_macro")))
+        print("    Cls Bin :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k.startswith("binary")))
+        print(f"    Unknown rate: {ft_metrics.get('unknown_rate', 'N/A')}")
 
         if "zeroshot" in clip_results[0]:
             zs_preds   = [r["zeroshot"] for r in clip_results]
-            zs_metrics = _compute_metrics(zs_preds, gts)
-            zs_cls_acc = _cls_accuracy([r["zeroshot_class"] for r in clip_results],
-                                       [r["gt_class"] for r in clip_results])
-            zs_metrics["cls_accuracy"] = zs_cls_acc
-            print("  Zero-shot   :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items()))
+            zs_metrics = _compute_caption_metrics(zs_preds, gts)
+            zs_metrics.update(_compute_cls_metrics([r["zeroshot_class"] for r in clip_results], gt_classes))
+            print("  Zero-shot   :")
+            print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k in ("bleu4", "rougeL", "bertscore_f1")))
+            print("    Cls 14  :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k in ("cls_accuracy", "f1_macro", "f1_weighted", "precision_macro", "recall_macro")))
+            print("    Cls Bin :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k.startswith("binary")))
+            print(f"    Unknown rate: {zs_metrics.get('unknown_rate', 'N/A')}")
 
     # --- Save results to JSON ---
     output = {
