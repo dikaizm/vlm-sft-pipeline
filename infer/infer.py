@@ -76,7 +76,7 @@ def _compute_metrics(predictions: list[str], references: list[str]) -> dict:
 
 DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
 VIDEO_ROOT    = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/UCFCrime_Test.json")
+TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/classified/UCFCrime_Test_deepseek_v4_pro.json")
 
 MODEL_ID      = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-500m-small-sft")
@@ -95,7 +95,27 @@ NUM_FRAMES     = 4
 SEED           = 99   # different from training seed
 MAX_NEW_TOKENS = 128
 
-PROMPT = "Describe the activity shown in this surveillance video clip."
+UCF_CLASSES = frozenset([
+    "Normal", "Abuse", "Arrest", "Arson", "Assault", "Burglary",
+    "Explosion", "Fighting", "RoadAccidents", "Robbery",
+    "Shooting", "Shoplifting", "Stealing", "Vandalism",
+])
+
+PROMPT = (
+    "Describe the activity in this surveillance video clip. "
+    "End your answer with the activity class in square brackets, e.g. [Normal] or [Robbery]. "
+    "Classes: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
+    "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
+)
+
+
+def parse_class(text: str) -> str:
+    """Extract last valid [ClassName] from VLM output. Returns 'Unknown' if not found."""
+    matches = re.findall(r'\[(\w+)\]', text)
+    for m in reversed(matches):
+        if m in UCF_CLASSES:
+            return m
+    return "Unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -146,15 +166,22 @@ def load_test_samples(n: int) -> list[dict]:
         video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
         if not os.path.isfile(video_path):
             continue
-        for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
+        for (start, end), sent_entry in zip(ann["timestamps"], ann["sentences"]):
             if end <= start:
                 continue
+            if isinstance(sent_entry, dict):
+                gt_text  = sent_entry["text"].strip()
+                gt_class = sent_entry.get("class", "Unknown")
+            else:
+                gt_text  = sent_entry.strip()
+                gt_class = "Unknown"
             items.append({
                 "video_id":   video_id,
                 "video_path": video_path,
                 "start":      float(start),
                 "end":        float(end),
-                "gt":         sentence.strip(),
+                "gt":         gt_text,
+                "gt_class":   gt_class,
             })
 
     if skipped_leakage:
@@ -214,7 +241,9 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
     )
 
 
-def run_inference(model, processor, device, frames: list, start: float, end: float, prompt: str) -> str:
+def run_inference(model, processor, device, frames: list, start: float, end: float, prompt: str,
+                  do_sample: bool = False, temperature: float = 0.7,
+                  top_p: float = 0.9, repetition_penalty: float = 1.0) -> str:
     messages = [
         {
             "role": "user",
@@ -238,15 +267,13 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
         max_length=1024,
     ).to(device)
 
+    gen_kwargs: dict = {"max_new_tokens": MAX_NEW_TOKENS}
+    if do_sample:
+        gen_kwargs.update({"do_sample": True, "temperature": temperature,
+                           "top_p": top_p, "repetition_penalty": repetition_penalty})
+
     with torch.no_grad():
-        out_ids = model.generate(
-            **inputs,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            repetition_penalty=1.3,
-        )
+        out_ids = model.generate(**inputs, **gen_kwargs)
 
     new_tokens = out_ids[:, inputs["input_ids"].shape[1]:]
     return processor.tokenizer.decode(new_tokens[0], skip_special_tokens=True).strip()
@@ -263,6 +290,10 @@ def main():
     parser.add_argument("--no-zeroshot", action="store_true",            help="Skip zero-shot model")
     parser.add_argument("--output",      default=None,                   help="Path to save JSON results (default: OUTPUT_DIR/results/<run>.json)")
     parser.add_argument("--no-mlflow",   action="store_true",            help="Disable MLflow logging")
+    parser.add_argument("--sample",      action="store_true",            help="Use sampling instead of greedy decoding (more diverse but noisier metrics)")
+    parser.add_argument("--temperature", type=float, default=0.7,        help="Sampling temperature (default: 0.7, only used with --sample)")
+    parser.add_argument("--top-p",       type=float, default=0.9,        help="Top-p nucleus sampling (default: 0.9, only used with --sample)")
+    parser.add_argument("--rep-penalty", type=float, default=1.0,        help="Repetition penalty (default: 1.0 = off)")
     args = parser.parse_args()
 
     device = get_device()
@@ -351,16 +382,27 @@ def main():
             "start":     s["start"],
             "end":       s["end"],
             "gt":        s["gt"],
+            "gt_class":  s.get("gt_class", "Unknown"),
         }
+        print(f"  GT class: {record['gt_class']}")
+
+        infer_kwargs = dict(do_sample=args.sample, temperature=args.temperature,
+                            top_p=args.top_p, repetition_penalty=args.rep_penalty)
 
         if zs_model is not None:
-            zs_out = run_inference(zs_model, zs_processor, device, frames, s["start"], s["end"], PROMPT)
-            print(f"  ZeroShot : {zs_out}")
-            record["zeroshot"] = zs_out
+            zs_out = run_inference(zs_model, zs_processor, device, frames, s["start"], s["end"], PROMPT,
+                                   **infer_kwargs)
+            zs_cls = parse_class(zs_out)
+            print(f"  ZeroShot : {zs_out}  → [{zs_cls}]")
+            record["zeroshot"]       = zs_out
+            record["zeroshot_class"] = zs_cls
 
-        ft_out = run_inference(ft_model, ft_processor, device, frames, s["start"], s["end"], PROMPT)
-        print(f"  FineTuned: {ft_out}")
-        record["finetuned"] = ft_out
+        ft_out = run_inference(ft_model, ft_processor, device, frames, s["start"], s["end"], PROMPT,
+                               **infer_kwargs)
+        ft_cls = parse_class(ft_out)
+        print(f"  FineTuned: {ft_out}  → [{ft_cls}]")
+        record["finetuned"]       = ft_out
+        record["finetuned_class"] = ft_cls
 
         clip_results.append(record)
         print()
@@ -371,16 +413,28 @@ def main():
     # --- Compute metrics ---
     gts = [r["gt"] for r in clip_results]
 
+    def _cls_accuracy(pred_classes: list[str], gt_classes: list[str]) -> float:
+        if not gt_classes or all(c == "Unknown" for c in gt_classes):
+            return 0.0
+        valid = [(p, g) for p, g in zip(pred_classes, gt_classes) if g != "Unknown"]
+        return round(sum(p == g for p, g in valid) / len(valid), 4) if valid else 0.0
+
     ft_metrics = zs_metrics = {}
     if clip_results:
         print("\nComputing metrics...")
         ft_preds   = [r["finetuned"] for r in clip_results]
         ft_metrics = _compute_metrics(ft_preds, gts)
+        ft_cls_acc = _cls_accuracy([r["finetuned_class"] for r in clip_results],
+                                   [r["gt_class"] for r in clip_results])
+        ft_metrics["cls_accuracy"] = ft_cls_acc
         print("  Fine-tuned  :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items()))
 
         if "zeroshot" in clip_results[0]:
             zs_preds   = [r["zeroshot"] for r in clip_results]
             zs_metrics = _compute_metrics(zs_preds, gts)
+            zs_cls_acc = _cls_accuracy([r["zeroshot_class"] for r in clip_results],
+                                       [r["gt_class"] for r in clip_results])
+            zs_metrics["cls_accuracy"] = zs_cls_acc
             print("  Zero-shot   :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items()))
 
     # --- Save results to JSON ---

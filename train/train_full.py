@@ -36,6 +36,7 @@ import mlflow
 import torch
 from PIL import Image
 from datasets import Dataset
+import torch.nn as nn
 from transformers import (
     AutoProcessor,
     AutoModelForImageTextToText,
@@ -53,13 +54,26 @@ _PIPELINE_ROOT = Path(__file__).parent.parent   # vlm-sft-pipeline/
 
 _DATA_ROOT    = os.environ.get("DATA_ROOT", str(_PIPELINE_ROOT / "data"))
 _VIDEO_ROOT   = f"{_DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-_TRAIN_JSON   = f"{_DATA_ROOT}/UCFCrime_Train.json"
-_VAL_JSON     = f"{_DATA_ROOT}/UCFCrime_Val.json"
+_TRAIN_JSON   = f"{_DATA_ROOT}/classified/UCFCrime_Train_deepseek_v4_pro.json"
+_VAL_JSON     = f"{_DATA_ROOT}/classified/UCFCrime_Val_deepseek_v4_pro.json"
 _OUTPUT_DIR   = os.environ.get("OUTPUT_DIR", str(_PIPELINE_ROOT / "output" / "smolvlm2-full-sft"))
 _MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
+
+UCF_CLASSES = frozenset([
+    "Normal", "Abuse", "Arrest", "Arson", "Assault", "Burglary",
+    "Explosion", "Fighting", "RoadAccidents", "Robbery",
+    "Shooting", "Shoplifting", "Stealing", "Vandalism",
+])
+
+PROMPT = (
+    "Describe the activity in this surveillance video clip. "
+    "End your answer with the activity class in square brackets, e.g. [Normal] or [Robbery]. "
+    "Classes: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
+    "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
+)
 
 FRAMES_PER_SEC = 4      # 4 frames per second of clip duration
 MAX_FRAMES     = 48     # frames per sub-clip (48 × 64 tokens = 3072 visual tokens; leaves 1024 for text in 4096 ctx)
@@ -73,6 +87,9 @@ SEED           = 42
 # Eliminates PyAV video seek/decode on repeated epochs (~4 GB for full dataset).
 # Set to None to disable.
 FRAME_CACHE_DIR = os.environ.get("FRAME_CACHE_DIR", str(_PIPELINE_ROOT / "frame_cache"))
+
+# Crime weight: multiplier applied to loss on crime-class samples (set from --crime-weight arg)
+CRIME_WEIGHT = 3.0
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -146,6 +163,53 @@ class MLflowMetricsCallback(TrainerCallback):
 
 
 # ---------------------------------------------------------------------------
+# Custom trainer: per-sample weighted loss for crime/normal imbalance
+# ---------------------------------------------------------------------------
+
+class SurveillanceTrainer(Trainer):
+    """Trainer with per-sample crime weighting.
+
+    Batch must contain a float tensor 'sample_weight' [B] where crime clips
+    carry a higher weight than Normal clips. Recomputes loss from logits
+    instead of using model's averaged loss.
+
+    Matches Idefics3/SmolVLM2 internal loss formulation:
+      - Left-shift by 1 for next-token prediction
+      - Ignore positions where label == -100 (system/user tokens, padding)
+    Per-sample loss is mean over that sample's valid tokens; batch loss is
+    weighted mean over samples.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        weights = inputs.pop("sample_weight", None)
+        outputs = model(**inputs)
+
+        if weights is None:
+            loss = outputs.loss
+        else:
+            logits = outputs.logits          # [B, T, V]
+            labels = inputs["labels"]        # [B, T]
+
+            # Causal LM shift: predict token t+1 from logits at t
+            shift_logits = logits[..., :-1, :].contiguous()   # [B, T-1, V]
+            shift_labels = labels[..., 1:].contiguous()       # [B, T-1]
+
+            loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+            per_token = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            ).view(shift_logits.size(0), -1)                  # [B, T-1]
+
+            mask = (shift_labels != -100).float()
+            denom = mask.sum(-1).clamp(min=1)
+            per_sample = (per_token * mask).sum(-1) / denom   # [B]
+
+            loss = (per_sample * weights.to(per_sample.device)).mean()
+
+        return (loss, outputs) if return_outputs else loss
+
+
+# ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
 
@@ -190,22 +254,26 @@ def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dic
         if not os.path.isfile(video_path):
             skipped += 1
             continue
-        for (start, end), sentence in zip(ann["timestamps"], ann["sentences"]):
+        for (start, end), sent_entry in zip(ann["timestamps"], ann["sentences"]):
             if end <= start:
                 continue
-            segs = _segment_clip(float(start), float(end), sentence.strip(), video_path)
+            # Support both old format (str) and new classified format ({"text": ..., "class": ...})
+            if isinstance(sent_entry, dict):
+                sentence_text  = sent_entry["text"].strip()
+                sentence_class = sent_entry.get("class", "Normal")
+            else:
+                sentence_text  = sent_entry.strip()
+                sentence_class = "Normal"
+            segs = _segment_clip(float(start), float(end), sentence_text, video_path)
+            for seg in segs:
+                seg["class"] = sentence_class
             n_clips += 1
             items.extend(segs)
-
-    # Oversample crime clips 3× to reduce normal/person-walking dominance
-    crime_normal = [it for it in items if "Normal" not in it["video_path"]]
-    normal_items = [it for it in items if "Normal" in it["video_path"]]
-    items = crime_normal * 3 + normal_items
 
     random.seed(SEED)
     random.shuffle(items)
     logging.getLogger("train_full").info(
-        f"  {n_clips} annotations → {len(items)} sub-clips after 3× crime oversample, {skipped} videos not found"
+        f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
     )
     return items if max_samples == -1 else items[:max_samples]
 
@@ -322,17 +390,20 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         frame_lists.append(frames)
         metadatas.append(_make_video_metadata(sample["start"], sample["end"], n_frames))
 
+        cls = sample.get("class", "Normal")
+        gt  = f"{sample['sentence']} [{cls}]"
+
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "video"},
-                    {"type": "text", "text": "Describe the activity shown in this surveillance video clip."},
+                    {"type": "text", "text": PROMPT},
                 ],
             },
             {
                 "role": "assistant",
-                "content": [{"type": "text", "text": sample["sentence"]}],
+                "content": [{"type": "text", "text": gt}],
             },
         ]
         text = processor.apply_chat_template(
@@ -378,6 +449,13 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
 
     labels[labels == processor.tokenizer.pad_token_id] = -100
     encoded["labels"] = labels
+
+    # Per-sample weight: crime clips weighted higher than Normal
+    weights = []
+    for sample in batch:
+        cls = sample.get("class", "Normal")
+        weights.append(1.0 if cls == "Normal" else float(CRIME_WEIGHT))
+    encoded["sample_weight"] = torch.tensor(weights, dtype=torch.float32)
 
     return dict(encoded)
 
@@ -448,21 +526,39 @@ def main():
     parser.add_argument("--resume", default=None,
                         help="Resume from checkpoint dir (e.g. ./output/.../checkpoint-1072). "
                              "Optimizer state loaded if present; otherwise resumes from model weights only.")
+    parser.add_argument("--crime-weight", type=float, default=3.0,
+                        help="Loss multiplier for crime-class samples vs Normal (default: 3.0). "
+                             "Set to 1.0 to disable weighting.")
+    parser.add_argument("--eval-steps", type=int, default=None,
+                        help="Override eval/save interval (steps). Default: max(50, steps_per_epoch//5). "
+                             "Use a small value (e.g. 5) for local smoke tests.")
+    parser.add_argument("--force-cpu", action="store_true",
+                        help="Force CPU training (disables MPS). Slow but avoids MPS OOM on local Mac.")
+    parser.add_argument("--train-json", default=None,
+                        help="Path to training JSON (default: <data-root>/classified/UCFCrime_Train_deepseek_v4_pro.json)")
+    parser.add_argument("--val-json", default=None,
+                        help="Path to validation JSON (default: <data-root>/classified/UCFCrime_Val_deepseek_v4_pro.json)")
     args = parser.parse_args()
 
-    assert torch.cuda.is_available(), (
-        "CUDA not found. train_full.py requires a CUDA GPU.\n"
-        "Check: nvidia-smi"
-    )
+    if not torch.cuda.is_available():
+        if args.force_cpu:
+            dev = "cpu (forced)"
+        elif torch.backends.mps.is_available():
+            dev = "mps"
+        else:
+            dev = "cpu"
+        print(f"[warn] CUDA not found — running on {dev}. "
+              "For full training use a CUDA GPU.")
 
     # Apply frame cache config (CLI overrides env)
-    global FRAME_CACHE_DIR
+    global FRAME_CACHE_DIR, CRIME_WEIGHT
     if args.frame_cache:
         FRAME_CACHE_DIR = args.frame_cache
+    CRIME_WEIGHT = args.crime_weight
 
     video_root = f"{args.data_root}/UCF_Crimes/UCF_Crimes/Videos"
-    train_json = f"{args.data_root}/UCFCrime_Train.json"
-    val_json   = f"{args.data_root}/UCFCrime_Val.json"
+    train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_deepseek_v4_pro.json"
+    val_json   = args.val_json   or f"{args.data_root}/classified/UCFCrime_Val_deepseek_v4_pro.json"
 
     if args.lora:
         mode_tag = "lora"
@@ -486,9 +582,15 @@ def main():
     logger.info(f"Epochs     : {args.epochs}  LR: {args.lr}  Batch: {args.batch}  GradAccum: {args.grad_accum}")
     logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  seg={SEG_DURATION:.1f}s  stride={SEG_STRIDE:.1f}s  MaxLen: {MAX_LENGTH}")
     logger.info(f"Frame cache: {FRAME_CACHE_DIR or 'disabled'}")
+    logger.info(f"Crime weight: {args.crime_weight}x (Normal=1.0)")
     logger.info(f"Output     : {output_dir}")
-    logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
-    logger.info(f"VRAM       : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    if torch.cuda.is_available():
+        logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
+        logger.info(f"VRAM       : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    elif torch.backends.mps.is_available():
+        logger.info("Device     : Apple MPS")
+    else:
+        logger.info("Device     : CPU")
 
     # --- MLflow ---
     mlflow.set_tracking_uri(MLFLOW_URI)
@@ -513,15 +615,16 @@ def main():
         "max_length":                  MAX_LENGTH,
         "lr_scheduler":                "cosine",
         "warmup_ratio":                0.05,
-        "optimizer":                   "adamw_bnb_8bit",
-        "precision":                   "bf16",
-        "device":                      torch.cuda.get_device_name(0),
-        "vram_gb":                     round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1),
+        "optimizer":                   "adamw_bnb_8bit" if torch.cuda.is_available() else "adamw_torch",
+        "precision":                   "bf16" if torch.cuda.is_available() else ("bf16-mps" if torch.backends.mps.is_available() else "fp32"),
+        "device":                      (torch.cuda.get_device_name(0) if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")),
+        "vram_gb":                     (round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1) if torch.cuda.is_available() else None),
         "task":                        "activity_description",
         "freeze_vision":               args.freeze_vision,
         "dataloader_workers":          4,
         "frame_cache":                 bool(FRAME_CACHE_DIR),
         "seed":                        SEED,
+        "crime_weight":                args.crime_weight,
     }
 
     run = mlflow.start_run(run_name=run_name)
@@ -541,7 +644,7 @@ def main():
             import flash_attn  # noqa: F401
             attn_impl = "flash_attention_2"
         except ImportError as e:
-            attn_impl = "sdpa" if torch.cuda.is_bf16_supported() else "eager"
+            attn_impl = "sdpa" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "eager"
             logger.warning(f"flash-attn not available ({e}), falling back to {attn_impl}")
         logger.info(f"Attention impl: {attn_impl}")
         try:
@@ -549,12 +652,17 @@ def main():
         except Exception:
             pass
 
+        _use_accel = torch.cuda.is_available() or (torch.backends.mps.is_available() and not args.force_cpu)
+        _dtype = torch.bfloat16 if _use_accel else torch.float32
+        _device_map = "auto" if torch.cuda.is_available() else None
         model = AutoModelForImageTextToText.from_pretrained(
             args.model,
-            dtype=torch.bfloat16,
+            dtype=_dtype,
             _attn_implementation=attn_impl,
-            device_map="auto",
+            device_map=_device_map,
         )
+        if args.force_cpu:
+            model = model.to("cpu")
 
         if args.lora:
             model = apply_lora(model, args.lora_rank, logger)
@@ -565,9 +673,10 @@ def main():
                 logger.info("Vision encoder: FROZEN")
             else:
                 logger.info("Vision encoder: UNFROZEN (full model trains)")
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
+            if torch.cuda.is_available():
+                model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
 
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -588,7 +697,7 @@ def main():
 
         # Eval every ~20% of training steps, save best checkpoint
         steps_per_epoch = max(1, len(train_ds) // (args.batch * args.grad_accum))
-        eval_steps = max(50, steps_per_epoch // 5)
+        eval_steps = args.eval_steps if args.eval_steps else max(50, steps_per_epoch // 5)
         save_steps = eval_steps
 
         logger.info(f"Steps/epoch: {steps_per_epoch}  Eval every: {eval_steps} steps")
@@ -604,6 +713,8 @@ def main():
 
         os.makedirs(output_dir, exist_ok=True)
 
+        _use_cuda = torch.cuda.is_available()
+        _use_mps  = (not _use_cuda) and torch.backends.mps.is_available() and not args.force_cpu
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=args.batch,
@@ -613,8 +724,9 @@ def main():
             learning_rate=args.lr,
             lr_scheduler_type="cosine",
             warmup_ratio=0.05,
-            optim="adamw_bnb_8bit",
-            bf16=True,
+            use_cpu=args.force_cpu,
+            optim="adamw_bnb_8bit" if _use_cuda else "adamw_torch",
+            bf16=_use_cuda,
             max_grad_norm=1.0,
             logging_steps=10,
             save_steps=save_steps,
@@ -633,7 +745,7 @@ def main():
 
         collator = functools.partial(collate_fn, processor=processor, model=model)
 
-        trainer = Trainer(
+        trainer = SurveillanceTrainer(
             model=model,
             args=training_args,
             train_dataset=train_ds,

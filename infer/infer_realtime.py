@@ -39,21 +39,11 @@ from transformers.video_utils import VideoMetadata
 # Crime category keywords for anomaly detection
 # ---------------------------------------------------------------------------
 
-CRIME_KEYWORDS = {
-    "Abuse":         ["abuse", "hit", "beat", "assault", "attack", "hurt", "harm", "force", "violenc"],
-    "Arrest":        ["arrest", "handcuff", "detain", "custody", "police", "officer", "apprehend"],
-    "Arson":         ["fire", "burn", "flame", "arson", "ignit", "torch"],
-    "Assault":       ["assault", "punch", "kick", "strik", "attack", "fight", "aggress"],
-    "Burglary":      ["burglar", "break", "enter", "intrude", "trespass", "unlock", "pry"],
-    "Explosion":     ["explo", "blast", "bomb", "detonate", "burst"],
-    "Fighting":      ["fight", "brawl", "wrestl", "struggle", "altercation", "scuffle"],
-    "RoadAccidents": ["crash", "collision", "accident", "impact", "veer", "vehicle"],
-    "Robbery":       ["rob", "steal", "grab", "snatch", "threaten", "weapon", "gun", "knife"],
-    "Shooting":      ["shoot", "gun", "firearm", "shot", "bullet", "weapon"],
-    "Shoplifting":   ["shoplift", "steal", "conceal", "merchandise", "pocket", "take"],
-    "Stealing":      ["steal", "theft", "take", "grab", "snatch", "pick"],
-    "Vandalism":     ["vandal", "spray", "graffiti", "damage", "smash", "break", "destr"],
-}
+UCF_CLASSES = frozenset([
+    "Normal", "Abuse", "Arrest", "Arson", "Assault", "Burglary",
+    "Explosion", "Fighting", "RoadAccidents", "Robbery",
+    "Shooting", "Shoplifting", "Stealing", "Vandalism",
+])
 
 ANOMALY_COLOR  = (0, 0, 220)    # BGR red for alert
 NORMAL_COLOR   = (0, 200, 0)    # BGR green for normal
@@ -88,13 +78,20 @@ def _make_video_metadata(n_frames: int, clip_duration: float) -> VideoMetadata:
 
 
 def run_inference(model, processor, device, frames: list[Image.Image],
-                  clip_duration: float, max_new_tokens: int = 80) -> str:
+                  clip_duration: float, max_new_tokens: int = 80,
+                  do_sample: bool = False, temperature: float = 0.7,
+                  top_p: float = 0.9, repetition_penalty: float = 1.0) -> str:
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "video"},
-                {"type": "text", "text": "Describe the activity shown in this surveillance video clip."},
+                {"type": "text", "text": (
+                    "Describe the activity in this surveillance video clip. "
+                    "End your answer with the activity class in square brackets, e.g. [Normal] or [Robbery]. "
+                    "Classes: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
+                    "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
+                )},
             ],
         }
     ]
@@ -114,15 +111,13 @@ def run_inference(model, processor, device, frames: list[Image.Image],
         max_length=512,
     ).to(device)
 
+    gen_kwargs: dict = {"max_new_tokens": max_new_tokens}
+    if do_sample:
+        gen_kwargs.update({"do_sample": True, "temperature": temperature,
+                           "top_p": top_p, "repetition_penalty": repetition_penalty})
+
     with torch.no_grad():
-        out_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            repetition_penalty=1.3,
-        )
+        out_ids = model.generate(**inputs, **gen_kwargs)
 
     new_tokens = out_ids[:, inputs["input_ids"].shape[1]:]
     return processor.tokenizer.decode(new_tokens[0], skip_special_tokens=True).strip()
@@ -132,13 +127,21 @@ def run_inference(model, processor, device, frames: list[Image.Image],
 # Anomaly detection
 # ---------------------------------------------------------------------------
 
+def parse_class(text: str) -> str:
+    """Extract last valid [ClassName] from VLM output. Returns 'Unknown' if not found."""
+    import re
+    matches = re.findall(r'\[(\w+)\]', text)
+    for m in reversed(matches):
+        if m in UCF_CLASSES:
+            return m
+    return "Unknown"
+
+
 def detect_anomaly(description: str) -> tuple[bool, str]:
-    """Return (is_anomaly, matched_category). Case-insensitive keyword scan."""
-    desc_lower = description.lower()
-    for category, keywords in CRIME_KEYWORDS.items():
-        if any(kw in desc_lower for kw in keywords):
-            return True, category
-    return False, ""
+    """Return (is_anomaly, category) by parsing [Class] from VLM output."""
+    category = parse_class(description)
+    is_anomaly = category not in ("Normal", "Unknown")
+    return is_anomaly, category
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +181,9 @@ class FrameBuffer:
 
 class InferenceWorker(threading.Thread):
     def __init__(self, model, processor, device, frame_buffer: FrameBuffer,
-                 n_frames: int, clip_duration: float, result_queue: queue.Queue):
+                 n_frames: int, clip_duration: float, result_queue: queue.Queue,
+                 do_sample: bool = False, temperature: float = 0.7,
+                 top_p: float = 0.9, repetition_penalty: float = 1.0):
         super().__init__(daemon=True)
         self.model        = model
         self.processor    = processor
@@ -187,6 +192,10 @@ class InferenceWorker(threading.Thread):
         self.n_frames     = n_frames
         self.clip_duration = clip_duration
         self.result_queue = result_queue
+        self.do_sample       = do_sample
+        self.temperature     = temperature
+        self.top_p           = top_p
+        self.repetition_penalty = repetition_penalty
         self._stop_event  = threading.Event()
         self._pause_event = threading.Event()
 
@@ -218,7 +227,9 @@ class InferenceWorker(threading.Thread):
             try:
                 desc = run_inference(
                     self.model, self.processor, self.device,
-                    frames, self.clip_duration
+                    frames, self.clip_duration,
+                    do_sample=self.do_sample, temperature=self.temperature,
+                    top_p=self.top_p, repetition_penalty=self.repetition_penalty,
                 )
             except Exception as e:
                 desc = f"[inference error: {e}]"
@@ -342,6 +353,14 @@ def main():
                         help="Directory for saved frames")
     parser.add_argument("--width",        type=int, default=640)
     parser.add_argument("--height",       type=int, default=480)
+    parser.add_argument("--sample",       action="store_true",
+                        help="Use sampling instead of greedy decoding")
+    parser.add_argument("--temperature",  type=float, default=0.7,
+                        help="Sampling temperature (only used with --sample)")
+    parser.add_argument("--top-p",        type=float, default=0.9,
+                        help="Top-p nucleus sampling (only used with --sample)")
+    parser.add_argument("--rep-penalty",  type=float, default=1.0,
+                        help="Repetition penalty (default: 1.0 = off)")
     args = parser.parse_args()
 
     device = get_device()
@@ -387,6 +406,10 @@ def main():
         n_frames=args.n_frames,
         clip_duration=args.clip_seconds,
         result_queue=result_q,
+        do_sample=args.sample,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        repetition_penalty=args.rep_penalty,
     )
     worker.start()
 
