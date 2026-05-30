@@ -635,6 +635,9 @@ def main():
         except Exception as e:
             logger.warning(f"MLflow log_params failed: {e}")
 
+        # Suppress noisy transformers warnings (processor kwargs deprecation spam)
+        logging.getLogger("transformers").setLevel(logging.ERROR)
+
         # --- Model & processor ---
         logger.info("Loading model and processor...")
         processor = AutoProcessor.from_pretrained(args.model)
