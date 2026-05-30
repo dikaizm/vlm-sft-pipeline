@@ -379,7 +379,7 @@ def main():
     parser.add_argument("--sample",      action="store_true",            help="Use sampling instead of greedy decoding (more diverse but noisier metrics)")
     parser.add_argument("--temperature", type=float, default=0.7,        help="Sampling temperature (default: 0.7, only used with --sample)")
     parser.add_argument("--top-p",       type=float, default=0.9,        help="Top-p nucleus sampling (default: 0.9, only used with --sample)")
-    parser.add_argument("--rep-penalty", type=float, default=1.0,        help="Repetition penalty (default: 1.0 = off)")
+    parser.add_argument("--rep-penalty", type=float, default=1.3,        help="Repetition penalty (default: 1.3; set 1.0 to disable)")
     parser.add_argument("--constrained", action="store_true",            help="Constrain first tokens to valid [ClassName] (class-first model only)")
     args = parser.parse_args()
 
