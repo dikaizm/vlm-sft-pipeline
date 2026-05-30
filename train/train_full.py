@@ -191,7 +191,9 @@ class SurveillanceTrainer(Trainer):
         token_weight = inputs.pop("token_weight",  None)
         outputs = model(**inputs)
 
-        if weights is None:
+        # Skip custom weighted loss in eval: gradients don't matter, and the
+        # reduction="none" path materializes [B, T, V] tensor — OOMs on large eval batches.
+        if weights is None or not model.training:
             loss = outputs.loss
         else:
             logits = outputs.logits          # [B, T, V]
