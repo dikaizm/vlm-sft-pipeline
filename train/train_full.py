@@ -32,6 +32,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+# Reduce CUDA allocator fragmentation — must be set before any CUDA allocation
+import os as _os
+_os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import mlflow
 import torch
 from PIL import Image
@@ -202,6 +206,10 @@ class SurveillanceTrainer(Trainer):
             # Causal LM shift: predict token t+1 from logits at t
             shift_logits = logits[..., :-1, :].contiguous()   # [B, T-1, V]
             shift_labels = labels[..., 1:].contiguous()       # [B, T-1]
+            # Free original logits immediately — CE upcast to fp32 would otherwise
+            # hold both bf16 [B,T,V] and fp32 [B,T,V] simultaneously → OOM
+            del logits
+            outputs.logits = None
 
             loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
             per_token = loss_fct(
@@ -552,9 +560,9 @@ def main():
                         help="Training epochs (default: 3)")
     parser.add_argument("--lr",         type=float, default=2e-5,
                         help="Learning rate (default: 2e-5)")
-    parser.add_argument("--batch",      type=int, default=16,
+    parser.add_argument("--batch",      type=int, default=8,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=2,
+    parser.add_argument("--grad-accum", type=int, default=4,
                         help="Gradient accumulation steps")
     parser.add_argument("--data-root",     default=_DATA_ROOT,
                         help="Root directory of dataset")
@@ -776,7 +784,7 @@ def main():
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=args.batch,
-            per_device_eval_batch_size=64,
+            per_device_eval_batch_size=8,
             gradient_accumulation_steps=args.grad_accum,
             num_train_epochs=args.epochs,
             learning_rate=args.lr,
