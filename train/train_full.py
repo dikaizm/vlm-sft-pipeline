@@ -456,7 +456,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         split_pos = None
         for j in range(len(ids_list) - len(assistant_token), -1, -1):
             if ids_list[j : j + len(assistant_token)] == assistant_token:
-                split_pos = j + len(assistant_token) + 1
+                split_pos = j + len(assistant_token)
                 break
         split_positions.append(split_pos)
         if split_pos is not None:
