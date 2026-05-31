@@ -552,9 +552,9 @@ def main():
                         help="Training epochs (default: 3)")
     parser.add_argument("--lr",         type=float, default=2e-5,
                         help="Learning rate (default: 2e-5)")
-    parser.add_argument("--batch",      type=int, default=8,
+    parser.add_argument("--batch",      type=int, default=16,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=4,
+    parser.add_argument("--grad-accum", type=int, default=2,
                         help="Gradient accumulation steps")
     parser.add_argument("--data-root",     default=_DATA_ROOT,
                         help="Root directory of dataset")
@@ -772,7 +772,7 @@ def main():
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=args.batch,
-            per_device_eval_batch_size=32,
+            per_device_eval_batch_size=64,
             gradient_accumulation_steps=args.grad_accum,
             num_train_epochs=args.epochs,
             learning_rate=args.lr,
@@ -788,7 +788,7 @@ def main():
             load_best_model_at_end=False,
             save_total_limit=3,
             remove_unused_columns=False,
-            dataloader_num_workers=4,
+            dataloader_num_workers=8,
             dataloader_prefetch_factor=2,
             report_to="none",
             disable_tqdm=False,
