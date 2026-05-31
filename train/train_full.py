@@ -474,10 +474,10 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
         if sp is None:
             continue
         cls = sample.get("class", "Normal")
-        class_ids = processor.tokenizer.encode(f"[{cls}]", add_special_tokens=False)
+        # Leading space matches context tokenization: chat template renders
+        # "Assistant: [Class]" where ' [' is a single combined token
+        class_ids = processor.tokenizer.encode(f" [{cls}]", add_special_tokens=False)
         ids_list  = encoded["input_ids"][i].tolist()
-        # Search for the exact [ClassName] token sequence within a small window after split_pos
-        # (chat template may insert a leading space token)
         match_pos = None
         for offset in range(4):
             pos = sp + offset
@@ -485,7 +485,7 @@ def collate_fn(batch: list[dict], processor, model) -> dict:
                 match_pos = pos
                 break
         if match_pos is None:
-            match_pos = sp  # fallback: weight the first N tokens of GT
+            match_pos = sp
         end_pos = min(match_pos + len(class_ids), labels.shape[1])
         token_weight[i, match_pos:end_pos] = float(CLASS_TOKEN_WEIGHT)
     encoded["token_weight"] = token_weight
