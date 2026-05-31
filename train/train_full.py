@@ -575,6 +575,10 @@ def main():
     parser.add_argument("--eval-steps", type=int, default=None,
                         help="Override eval/save interval (steps). Default: max(50, steps_per_epoch//5). "
                              "Use a small value (e.g. 5) for local smoke tests.")
+    parser.add_argument("--eval-during-training", action="store_true",
+                        help="Enable validation loss eval during training (eval_strategy=steps). "
+                             "Disabled by default — eval at large batch adds ~25 GB peak VRAM. "
+                             "Use with --eval-steps 10 to test eval OOM before full run.")
     parser.add_argument("--no-grad-checkpoint", action="store_true",
                         help="Disable gradient checkpointing. Only use on GPUs with extreme VRAM (>400 GB).")
     parser.add_argument("--force-cpu", action="store_true",
@@ -784,7 +788,8 @@ def main():
             max_grad_norm=1.0,
             logging_steps=10,
             save_steps=save_steps,
-            eval_strategy="no",
+            eval_strategy="steps" if args.eval_during_training else "no",
+            eval_steps=eval_steps if args.eval_during_training else None,
             load_best_model_at_end=False,
             save_total_limit=3,
             remove_unused_columns=False,
