@@ -774,6 +774,14 @@ def main():
 
         if args.lora:
             model = apply_lora(model, args.lora_rank, logger)
+            if torch.cuda.is_available() and not args.no_grad_checkpoint:
+                model.enable_input_require_grads()
+                model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+                logger.info("Gradient checkpointing: ENABLED (LoRA)")
+            elif torch.cuda.is_available():
+                logger.info("Gradient checkpointing: DISABLED (--no-grad-checkpoint)")
         else:
             if args.freeze_vision:
                 for param in model.model.vision_model.parameters():
