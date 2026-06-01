@@ -54,19 +54,23 @@ per_sample = (per_token * mask).sum(-1) / denom
 
 This raises the effective class-token contribution from ~8% to ~30% of the total loss without discarding description supervision.
 
-### Class-Balanced Sampling
+### Class-Aware Sampling
 
-UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime spread across 13 crime classes (~80 samples each). Scalar loss weighting (`crime-weight=3`) leaves minority crime tokens with ~38× less exposure than `[Normal]`, so the model defaults to Normal.
+UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime spread across 13 crime classes (~80 samples each). Scalar loss weighting (`crime-weight=3`) leaves minority crime tokens with ~38× less exposure than `[Normal]`.
 
-`SurveillanceTrainer._get_train_sampler` returns a `WeightedRandomSampler` with `weight = 1 / class_count`. Each batch is approximately uniform across all 14 classes — every crime class gets the same expected number of gradient updates as Normal.
+`SurveillanceTrainer._get_train_sampler` supports three modes via `--sampler`:
 
-| Scheme | [Robbery] updates / 3 epochs |
-|---|---|
-| Raw distribution | ~24 |
-| Crime-weight=3 | ~24 (same exposure, scaled loss only) |
-| Class-balanced sampler | ~900 (matches Normal) |
+| Mode | Weight | Normal prob / batch | Each crime class | Notes |
+|---|---|---|---|---|
+| `raw` | uniform | ~90% | ~0.75% | Natural distribution |
+| `sqrt` (default) | `1/sqrt(count)` | ~46% | ~4% | Boosts minority without collapsing |
+| `balanced` | `1/count` | ~7% | ~7% | Uniform across 14 classes — caused mode collapse to literal `[ClassName]` on 500M |
 
-`CRIME_WEIGHT` is preserved as a CLI option for additional emphasis on top of the balanced sampler, but defaults to `1.0` (disabled).
+**Why `sqrt` (not full balance)**: Full balancing (`1/count`) showed all 14 class tokens per batch with equal frequency. On a 500M model, gradient pulled toward 14 different class-token destinations simultaneously, causing collapse — model defaulted to emitting the literal `[ClassName]` placeholder from the prompt template (Unknown rate 0.95 at step 400 vs 0.65 at step 300 with raw distribution).
+
+Sqrt scaling keeps Normal as the majority anchor (~46%) while giving each crime class ~5× the exposure of raw distribution. The model retains a clear default but receives enough minority-class signal to differentiate.
+
+`CRIME_WEIGHT` is preserved as a CLI option for additional emphasis on top of the sampler, but defaults to `1.0` (disabled).
 
 ### Constrained Decoding (Optional)
 
@@ -94,7 +98,7 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 | Segment | 12s | 75% overlap (9s stride) |
 | Max length | 4096 | 3072 visual + ~1024 text |
 | CRIME_WEIGHT | 1.0 | Disabled by default — class-balanced sampler handles imbalance |
-| Sampler | class-balanced | WeightedRandomSampler, 1/class_count weights |
+| Sampler | sqrt | WeightedRandomSampler, 1/sqrt(class_count) — minority boost without collapse |
 | CLASS_TOKEN_WEIGHT | 5.0 | `[ClassName]` bracket token multiplier |
 | Optimizer | adamw_bnb_8bit | 8-bit Adam on CUDA |
 | Precision | bf16 | Flash Attention 2 |

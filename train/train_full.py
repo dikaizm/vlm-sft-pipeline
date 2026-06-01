@@ -190,21 +190,39 @@ class SurveillanceTrainer(Trainer):
       - Batch loss     = sample_weight-weighted mean over samples
     """
 
+    sampler_mode: str = "sqrt"   # set from CLI via SurveillanceTrainer.sampler_mode
+
     def _get_train_sampler(self, train_dataset=None):
-        """Class-balanced sampler — each of 14 classes gets equal probability per batch.
-        Counteracts severe imbalance (~90% Normal) so minority crime classes
-        receive far more gradient updates than raw weighting could provide.
+        """Class-aware sampler with configurable scaling.
+
+        Modes:
+          - 'raw'    : natural distribution (no sampler — default Trainer behavior)
+          - 'sqrt'   : weight = 1/sqrt(count) — minority boosted but Normal stays majority
+          - 'balanced': weight = 1/count — uniform across all 14 classes (aggressive)
+
+        Full balancing on 500M caused mode collapse to literal '[ClassName]' (model
+        couldn't disambiguate 14 classes per batch). Sqrt is gentler middle ground.
         """
+        if self.sampler_mode == "raw":
+            return super()._get_train_sampler(train_dataset)
+
         from collections import Counter
+        import math
         from torch.utils.data import WeightedRandomSampler
         ds = train_dataset if train_dataset is not None else self.train_dataset
-        # Use column access for HF Dataset (fast); fall back to iteration
         try:
             classes = list(ds["class"])
         except (KeyError, TypeError):
             classes = [s.get("class", "Normal") for s in ds]
         counts = Counter(classes)
-        weights = [1.0 / counts[c] for c in classes]
+
+        if self.sampler_mode == "sqrt":
+            weights = [1.0 / math.sqrt(counts[c]) for c in classes]
+        elif self.sampler_mode == "balanced":
+            weights = [1.0 / counts[c] for c in classes]
+        else:
+            raise ValueError(f"Unknown sampler_mode: {self.sampler_mode}")
+
         return WeightedRandomSampler(
             weights=weights,
             num_samples=len(ds),
@@ -604,6 +622,10 @@ def main():
     parser.add_argument("--eval-steps", type=int, default=None,
                         help="Override eval/save interval (steps). Default: max(50, steps_per_epoch//5). "
                              "Use a small value (e.g. 5) for local smoke tests.")
+    parser.add_argument("--sampler", choices=["raw", "sqrt", "balanced"], default="sqrt",
+                        help="Class-aware sampler mode. raw=natural distribution (~90%% Normal), "
+                             "sqrt=weight 1/sqrt(count) (Normal ~46%%, minority ~4%% each — recommended for 500M), "
+                             "balanced=weight 1/count (uniform across 14 classes — caused mode collapse on 500M).")
     parser.add_argument("--eval-during-training", action="store_true",
                         help="Enable validation loss eval during training (eval_strategy=steps). "
                              "Disabled by default — eval at large batch adds ~25 GB peak VRAM. "
@@ -662,7 +684,7 @@ def main():
     logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  seg={SEG_DURATION:.1f}s  stride={SEG_STRIDE:.1f}s  MaxLen: {MAX_LENGTH}")
     logger.info(f"Frame cache: {FRAME_CACHE_DIR or 'disabled'}")
     logger.info(f"Crime weight: {args.crime_weight}x (Normal=1.0)")
-    logger.info(f"Sampler    : class-balanced (WeightedRandomSampler, equal prob per class)")
+    logger.info(f"Sampler    : {args.sampler} (raw=natural, sqrt=1/sqrt(count), balanced=1/count)")
     logger.info(f"Class-token weight: {args.class_token_weight}x ([ClassName] bracket tokens)")
     logger.info(f"Output     : {output_dir}")
     if torch.cuda.is_available():
@@ -840,6 +862,7 @@ def main():
             data_collator=collator,
             callbacks=[MLflowMetricsCallback()],
         )
+        trainer.sampler_mode = args.sampler
 
         # --- Train ---
         resume = args.resume or True  # True = auto-detect last checkpoint in output_dir
