@@ -84,8 +84,8 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 | Model | SmolVLM2-500M-Video-Instruct | Full fine-tune, vision encoder unfrozen |
 | Epochs | 3 | Full UCF-Crime train split |
 | LR | 2e-5 | Cosine schedule, 5% warmup |
-| Batch | 8 | Effective 32 with grad_accum=4 |
-| Grad accum | 4 | |
+| Batch | 32 | Effective 32, no accumulation (B200 191 GB) |
+| Grad accum | 1 | |
 | Frames/sec | 4 | Up to 48 frames per sub-clip |
 | Segment | 12s | 75% overlap (9s stride) |
 | Max length | 4096 | 3072 visual + ~1024 text |
