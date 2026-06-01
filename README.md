@@ -95,9 +95,9 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Model | SmolVLM2-2.2B-Video-Instruct | LoRA on LLM (q/k/v/o/gate/up/down proj), vision encoder frozen |
+| Model | SmolVLM2-2.2B-Instruct | LoRA on LLM (q/k/v/o/gate/up/down proj) + vision encoder (q/k/v/out_proj/fc1/fc2) |
 | LoRA rank | 16 | DoRA enabled, alpha = 2× rank |
-| Trainable params | ~10M / 2.2B (~0.5%) | LoRA adapters only |
+| Trainable params | ~30M / 2.2B (~1.3%) | LoRA adapters on LLM + SigLIP vision encoder for surveillance domain adaptation |
 | Epochs | 3 | Full UCF-Crime train split |
 | LR | 1e-4 | LoRA typically uses 5–10× higher LR than full FT |
 | Batch | 16 | Effective 32 with grad_accum=2 |
