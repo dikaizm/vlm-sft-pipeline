@@ -190,6 +190,27 @@ class SurveillanceTrainer(Trainer):
       - Batch loss     = sample_weight-weighted mean over samples
     """
 
+    def _get_train_sampler(self, train_dataset=None):
+        """Class-balanced sampler — each of 14 classes gets equal probability per batch.
+        Counteracts severe imbalance (~90% Normal) so minority crime classes
+        receive far more gradient updates than raw weighting could provide.
+        """
+        from collections import Counter
+        from torch.utils.data import WeightedRandomSampler
+        ds = train_dataset if train_dataset is not None else self.train_dataset
+        # Use column access for HF Dataset (fast); fall back to iteration
+        try:
+            classes = list(ds["class"])
+        except (KeyError, TypeError):
+            classes = [s.get("class", "Normal") for s in ds]
+        counts = Counter(classes)
+        weights = [1.0 / counts[c] for c in classes]
+        return WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(ds),
+            replacement=True,
+        )
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         weights      = inputs.pop("sample_weight", None)
         token_weight = inputs.pop("token_weight",  None)
@@ -574,9 +595,9 @@ def main():
     parser.add_argument("--resume", default=None,
                         help="Resume from checkpoint dir (e.g. ./output/.../checkpoint-1072). "
                              "Optimizer state loaded if present; otherwise resumes from model weights only.")
-    parser.add_argument("--crime-weight", type=float, default=3.0,
-                        help="Loss multiplier for crime-class samples vs Normal (default: 3.0). "
-                             "Set to 1.0 to disable weighting.")
+    parser.add_argument("--crime-weight", type=float, default=1.0,
+                        help="Loss multiplier for crime-class samples vs Normal (default: 1.0 — disabled). "
+                             "Redundant with class-balanced sampler. Set >1.0 to add extra crime emphasis on top.")
     parser.add_argument("--class-token-weight", type=float, default=5.0,
                         help="Per-token loss multiplier for [ClassName] bracket tokens (default: 5.0). "
                              "Set to 1.0 to disable.")
@@ -641,6 +662,7 @@ def main():
     logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  seg={SEG_DURATION:.1f}s  stride={SEG_STRIDE:.1f}s  MaxLen: {MAX_LENGTH}")
     logger.info(f"Frame cache: {FRAME_CACHE_DIR or 'disabled'}")
     logger.info(f"Crime weight: {args.crime_weight}x (Normal=1.0)")
+    logger.info(f"Sampler    : class-balanced (WeightedRandomSampler, equal prob per class)")
     logger.info(f"Class-token weight: {args.class_token_weight}x ([ClassName] bracket tokens)")
     logger.info(f"Output     : {output_dir}")
     if torch.cuda.is_available():

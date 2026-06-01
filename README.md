@@ -54,15 +54,19 @@ per_sample = (per_token * mask).sum(-1) / denom
 
 This raises the effective class-token contribution from ~8% to ~30% of the total loss without discarding description supervision.
 
-### Sample-Level Crime Weighting
+### Class-Balanced Sampling
 
-UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime. Without correction, the model learns to predict Normal for everything.
+UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime spread across 13 crime classes (~80 samples each). Scalar loss weighting (`crime-weight=3`) leaves minority crime tokens with ~38× less exposure than `[Normal]`, so the model defaults to Normal.
 
-```
-CRIME_WEIGHT = 3.0   # loss multiplier on all non-Normal samples
-```
+`SurveillanceTrainer._get_train_sampler` returns a `WeightedRandomSampler` with `weight = 1 / class_count`. Each batch is approximately uniform across all 14 classes — every crime class gets the same expected number of gradient updates as Normal.
 
-Applied as a per-sample scalar on top of the token-level loss.
+| Scheme | [Robbery] updates / 3 epochs |
+|---|---|
+| Raw distribution | ~24 |
+| Crime-weight=3 | ~24 (same exposure, scaled loss only) |
+| Class-balanced sampler | ~900 (matches Normal) |
+
+`CRIME_WEIGHT` is preserved as a CLI option for additional emphasis on top of the balanced sampler, but defaults to `1.0` (disabled).
 
 ### Constrained Decoding (Optional)
 
@@ -89,7 +93,8 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 | Frames/sec | 4 | Up to 48 frames per sub-clip |
 | Segment | 12s | 75% overlap (9s stride) |
 | Max length | 4096 | 3072 visual + ~1024 text |
-| CRIME_WEIGHT | 3.0 | Non-Normal sample loss multiplier |
+| CRIME_WEIGHT | 1.0 | Disabled by default — class-balanced sampler handles imbalance |
+| Sampler | class-balanced | WeightedRandomSampler, 1/class_count weights |
 | CLASS_TOKEN_WEIGHT | 5.0 | `[ClassName]` bracket token multiplier |
 | Optimizer | adamw_bnb_8bit | 8-bit Adam on CUDA |
 | Precision | bf16 | Flash Attention 2 |
