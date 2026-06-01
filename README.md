@@ -1,8 +1,14 @@
-# VLM SFT Pipeline — Class-First Weighted Loss
+# VLM SFT Pipeline — 2.2B LoRA
 
-Branch: `class-first-weighted-loss`
+Branch: `exp/2b-lora`
 
-Full supervised fine-tuning of SmolVLM2-500M on UCF-Crime + UCA dataset for simultaneous **video captioning** and **anomaly classification** from surveillance clips.
+LoRA fine-tuning of SmolVLM2-2.2B-Video-Instruct on UCF-Crime + UCA dataset for simultaneous **video captioning** and **anomaly classification**. Inherits class-first weighted loss + sqrt-balanced sampling from upstream 500M branch.
+
+**Rationale for 2.2B + LoRA:**
+- 500M proved insufficient on 14-class minority discrimination (mode collapsed with full balancing, marginal gains with sqrt). Per-class sample counts (~80 each for crime classes) require more representational capacity than 500M provides.
+- 2.2B has ~4× the parameters → better rare-class learning from limited data.
+- LoRA keeps trainable params at ~0.5% (~10M) so optimizer + gradient memory is tiny. Main VRAM cost is activations (similar per-sample as 500M, but more layers).
+- B200 192 GB fits batch=16 comfortably with LoRA.
 
 ---
 
@@ -89,11 +95,13 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Model | SmolVLM2-500M-Video-Instruct | Full fine-tune, vision encoder unfrozen |
+| Model | SmolVLM2-2.2B-Video-Instruct | LoRA on LLM (q/k/v/o/gate/up/down proj), vision encoder frozen |
+| LoRA rank | 16 | DoRA enabled, alpha = 2× rank |
+| Trainable params | ~10M / 2.2B (~0.5%) | LoRA adapters only |
 | Epochs | 3 | Full UCF-Crime train split |
-| LR | 2e-5 | Cosine schedule, 5% warmup |
-| Batch | 32 | Effective 32, no accumulation (B200 191 GB) |
-| Grad accum | 1 | |
+| LR | 1e-4 | LoRA typically uses 5–10× higher LR than full FT |
+| Batch | 16 | Effective 32 with grad_accum=2 |
+| Grad accum | 2 | |
 | Frames/sec | 4 | Up to 48 frames per sub-clip |
 | Segment | 12s | 75% overlap (9s stride) |
 | Max length | 4096 | 3072 visual + ~1024 text |
@@ -120,17 +128,22 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 
 ## Usage
 
-### Training
+### Training (2.2B LoRA)
 
 ```bash
 DATA_ROOT=/path/to/data \
 FRAME_CACHE_DIR=/path/to/cache \
 python train/train_full.py \
-  --model HuggingFaceTB/SmolVLM2-500M-Video-Instruct \
-  --epochs 3 \
-  --crime-weight 3.0 \
-  --class-token-weight 5.0
+  --model HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct \
+  --lora \
+  --lora-rank 16 \
+  --batch 16 \
+  --grad-accum 2 \
+  --lr 1e-4 \
+  --epochs 3
 ```
+
+LoRA on LLM layers only (vision encoder stays frozen). Sampler defaults to `sqrt`. If OOM at start → drop to `--batch 8 --grad-accum 4`.
 
 ### Inference
 
