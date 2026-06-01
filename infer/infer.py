@@ -426,13 +426,28 @@ def main():
             mlflow_run = None
 
     # --- Load fine-tuned model ---
-    # Processor may not be in checkpoint dir — fall back to base model
+    # Detect LoRA adapter checkpoint vs full-FT checkpoint
     print(f"Loading fine-tuned model from {args.finetuned} ...")
-    proc_src = args.finetuned if (Path(args.finetuned) / "tokenizer.json").exists() else MODEL_ID
-    ft_processor = AutoProcessor.from_pretrained(proc_src)
-    ft_model     = AutoModelForImageTextToText.from_pretrained(
-        args.finetuned, torch_dtype=dtype
-    ).to(device)
+    adapter_cfg_path = Path(args.finetuned) / "adapter_config.json"
+    is_lora_ckpt = adapter_cfg_path.exists()
+
+    if is_lora_ckpt:
+        import json as _json
+        with open(adapter_cfg_path) as _f:
+            _adapter_cfg = _json.load(_f)
+        base_id = _adapter_cfg.get("base_model_name_or_path", MODEL_ID)
+        print(f"  LoRA adapter detected. Base model: {base_id}")
+        proc_src = args.finetuned if (Path(args.finetuned) / "tokenizer.json").exists() else base_id
+        ft_processor = AutoProcessor.from_pretrained(proc_src)
+        from peft import PeftModel
+        _base = AutoModelForImageTextToText.from_pretrained(base_id, torch_dtype=dtype).to(device)
+        ft_model = PeftModel.from_pretrained(_base, args.finetuned).to(device)
+    else:
+        proc_src = args.finetuned if (Path(args.finetuned) / "tokenizer.json").exists() else MODEL_ID
+        ft_processor = AutoProcessor.from_pretrained(proc_src)
+        ft_model = AutoModelForImageTextToText.from_pretrained(
+            args.finetuned, torch_dtype=dtype
+        ).to(device)
     ft_model.eval()
     print(f"  Params: {sum(p.numel() for p in ft_model.parameters())/1e6:.0f}M")
 
