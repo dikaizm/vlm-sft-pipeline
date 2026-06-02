@@ -896,6 +896,7 @@ def main():
             bf16=_use_cuda,
             max_grad_norm=1.0,
             logging_steps=10,
+            save_strategy="steps",
             save_steps=save_steps,
             eval_strategy="steps" if args.eval_during_training else "no",
             eval_steps=eval_steps if args.eval_during_training else None,
