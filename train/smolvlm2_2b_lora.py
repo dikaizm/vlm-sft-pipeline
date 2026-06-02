@@ -35,7 +35,7 @@ CLASS_TOKEN_W = 5.0
 FRAME_JITTER  = 1.5
 EVAL_STEPS    = 50
 SAVE_STEPS    = 50
-NO_GRAD_CKPT  = True  # disable grad checkpointing — faster, 96GB has headroom
+NO_GRAD_CKPT  = False # keep grad checkpointing ON — guards against OOM on batch=16 x 32-frame x rank-32; ~20-30% slower but safe
 
 # Must be set before train_full is imported (module-level constants read at import time)
 os.environ["MLFLOW_URI"]        = MLFLOW_URI
