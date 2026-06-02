@@ -15,7 +15,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 MODEL_ID      = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
-DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
+DATA_ROOT     = os.environ.get("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / "smolvlm2-2b-lora")
 
 MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
