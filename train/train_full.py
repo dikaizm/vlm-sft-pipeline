@@ -192,6 +192,36 @@ class SurveillanceTrainer(Trainer):
     """
 
     sampler_mode: str = "sqrt"   # set from CLI via SurveillanceTrainer.sampler_mode
+    vision_lr: float | None = None  # if set, vision LoRA params use this LR (else inherit args.learning_rate)
+
+    def create_optimizer(self):
+        """Split LoRA params into vision vs LLM groups for differential LR."""
+        if self.optimizer is not None:
+            return self.optimizer
+        if self.vision_lr is None:
+            return super().create_optimizer()
+
+        vision_params, other_params = [], []
+        for n, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            (vision_params if "vision_model" in n else other_params).append(p)
+
+        from transformers.trainer_pt_utils import get_parameter_names
+        from torch import nn
+        decay_names = set(get_parameter_names(self.model, [nn.LayerNorm]))
+        # Simple two-group split; weight decay handled by optimizer defaults
+        param_groups = [
+            {"params": other_params, "lr": self.args.learning_rate},
+            {"params": vision_params, "lr": self.vision_lr},
+        ]
+        optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+        optimizer_kwargs.pop("lr", None)
+        self.optimizer = optimizer_cls(param_groups, **optimizer_kwargs)
+        logger.info(f"Differential LR: LLM={self.args.learning_rate}  Vision={self.vision_lr}  "
+                    f"(vision params: {sum(p.numel() for p in vision_params)/1e6:.1f}M, "
+                    f"LLM params: {sum(p.numel() for p in other_params)/1e6:.1f}M)")
+        return self.optimizer
 
     def _get_train_sampler(self, train_dataset=None):
         """Class-aware sampler with configurable scaling.
@@ -335,9 +365,18 @@ def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dic
 
     random.seed(SEED)
     random.shuffle(items)
-    logging.getLogger("train_full").info(
+    log = logging.getLogger("train_full")
+    log.info(
         f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
     )
+    # Class distribution audit (post-filter)
+    from collections import Counter as _Counter
+    cls_counts = _Counter(it["class"] for it in items)
+    total = sum(cls_counts.values())
+    log.info(f"  Class distribution ({total} sub-clips):")
+    for cls in sorted(cls_counts.keys(), key=lambda c: (-cls_counts[c], c)):
+        n = cls_counts[cls]
+        log.info(f"    {cls:18s} {n:6d}  ({100*n/total:5.1f}%)")
     return items if max_samples == -1 else items[:max_samples]
 
 
@@ -440,18 +479,28 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
     )
 
 
-def collate_fn(batch: list[dict], processor, model) -> dict:
+FRAME_JITTER = 0.0  # set from CLI; >0 enables temporal start jitter (seconds, train only)
+
+def collate_fn(batch: list[dict], processor, model, is_train: bool = True) -> dict:
     texts       = []
     frame_lists = []
     metadatas   = []
 
     for sample in batch:
-        n_frames = adaptive_n_frames(sample["start"], sample["end"])
+        start, end = sample["start"], sample["end"]
+        # Temporal frame jitter: shift start by uniform U(-J, +J), keep duration constant.
+        # Cache misses on jittered samples — pay re-extraction cost for temporal augmentation.
+        if is_train and FRAME_JITTER > 0:
+            shift = random.uniform(-FRAME_JITTER, FRAME_JITTER)
+            new_start = max(0.0, start + shift)
+            new_end   = new_start + (end - start)
+            start, end = new_start, new_end
+        n_frames = adaptive_n_frames(start, end)
         frames = load_or_extract_frames(
-            sample["video_path"], sample["start"], sample["end"], n_frames
+            sample["video_path"], start, end, n_frames
         )
         frame_lists.append(frames)
-        metadatas.append(_make_video_metadata(sample["start"], sample["end"], n_frames))
+        metadatas.append(_make_video_metadata(start, end, n_frames))
 
         cls = sample.get("class", "Normal")
         gt  = f"[{cls}] {sample['sentence']}"
@@ -600,7 +649,13 @@ def main():
     parser.add_argument("--epochs",     type=int, default=3,
                         help="Training epochs (default: 3)")
     parser.add_argument("--lr",         type=float, default=2e-5,
-                        help="Learning rate (default: 2e-5)")
+                        help="Learning rate for LLM LoRA (default: 2e-5)")
+    parser.add_argument("--vision-lr",  type=float, default=None,
+                        help="Differential LR for vision encoder LoRA params (default: same as --lr). "
+                             "Set lower (e.g., 5e-5 when --lr=1e-4) to limit catastrophic shift of SigLIP features.")
+    parser.add_argument("--frame-jitter", type=float, default=0.0,
+                        help="Temporal start-time jitter in seconds (uniform U(-J,+J)); 0 = disabled. "
+                             "Cheap augmentation against fixed sub-clip windows; bypasses frame cache on jittered samples.")
     parser.add_argument("--batch",      type=int, default=32,
                         help="Per-device train batch size")
     parser.add_argument("--grad-accum", type=int, default=1,
@@ -653,11 +708,12 @@ def main():
               "For full training use a CUDA GPU.")
 
     # Apply frame cache config (CLI overrides env)
-    global FRAME_CACHE_DIR, CRIME_WEIGHT, CLASS_TOKEN_WEIGHT
+    global FRAME_CACHE_DIR, CRIME_WEIGHT, CLASS_TOKEN_WEIGHT, FRAME_JITTER
     if args.frame_cache:
         FRAME_CACHE_DIR = args.frame_cache
     CRIME_WEIGHT       = args.crime_weight
     CLASS_TOKEN_WEIGHT = args.class_token_weight
+    FRAME_JITTER       = args.frame_jitter
 
     video_root = f"{args.data_root}/UCF_Crimes/UCF_Crimes/Videos"
     train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_deepseek_v4_pro.json"
@@ -688,6 +744,10 @@ def main():
     logger.info(f"Crime weight: {args.crime_weight}x (Normal=1.0)")
     logger.info(f"Sampler    : {args.sampler} (raw=natural, sqrt=1/sqrt(count), balanced=1/count)")
     logger.info(f"Class-token weight: {args.class_token_weight}x ([ClassName] bracket tokens)")
+    if args.vision_lr is not None:
+        logger.info(f"Vision LR  : {args.vision_lr} (differential — LLM LoRA uses {args.lr})")
+    if args.frame_jitter > 0:
+        logger.info(f"Frame jitter: ±{args.frame_jitter:.2f}s start-time (cache bypassed on jittered samples)")
     logger.info(f"Output     : {output_dir}")
     if torch.cuda.is_available():
         logger.info(f"GPU        : {torch.cuda.get_device_name(0)}")
@@ -873,6 +933,7 @@ def main():
             callbacks=[MLflowMetricsCallback()],
         )
         trainer.sampler_mode = args.sampler
+        trainer.vision_lr = args.vision_lr
 
         # --- Train ---
         resume = args.resume or True  # True = auto-detect last checkpoint in output_dir
