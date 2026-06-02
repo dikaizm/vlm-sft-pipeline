@@ -8,9 +8,8 @@ Usage:
     DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/train_full.py
         --model HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 
-    # LoRA, 2.2B
-    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/train_full.py \
-        --model HuggingFaceTB/SmolVLM2-2.2B-Video-Instruct --lora
+    # LoRA, 2.2B (default config)
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/train_full.py
 
     # Pilot run (200 samples) to validate pipeline
     DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/train_full.py \
@@ -61,7 +60,7 @@ _VIDEO_ROOT   = f"{_DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
 _TRAIN_JSON   = f"{_DATA_ROOT}/classified/UCFCrime_Train_deepseek_v4_pro.json"
 _VAL_JSON     = f"{_DATA_ROOT}/classified/UCFCrime_Val_deepseek_v4_pro.json"
 _OUTPUT_DIR   = os.environ.get("OUTPUT_DIR", str(_PIPELINE_ROOT / "output" / "smolvlm2-full-sft"))
-_MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+_MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
@@ -638,8 +637,10 @@ def main():
                         help="Model ID or local path")
     parser.add_argument("--output",     default=_OUTPUT_DIR,
                         help="Output directory for checkpoints")
-    parser.add_argument("--lora",       action="store_true",
+    parser.add_argument("--lora",       action="store_true", default=True,
                         help="Use LoRA (PEFT) instead of full fine-tune")
+    parser.add_argument("--no-lora",    action="store_true",
+                        help="Disable LoRA (full fine-tune)")
     parser.add_argument("--lora-rank",  type=int, default=16,
                         help="LoRA rank (default: 16)")
     parser.add_argument("--max-train",  type=int, default=-1,
@@ -648,17 +649,17 @@ def main():
                         help="Max validation samples (-1 = full dataset)")
     parser.add_argument("--epochs",     type=int, default=3,
                         help="Training epochs (default: 3)")
-    parser.add_argument("--lr",         type=float, default=2e-5,
-                        help="Learning rate for LLM LoRA (default: 2e-5)")
-    parser.add_argument("--vision-lr",  type=float, default=None,
-                        help="Differential LR for vision encoder LoRA params (default: same as --lr). "
-                             "Set lower (e.g., 5e-5 when --lr=1e-4) to limit catastrophic shift of SigLIP features.")
-    parser.add_argument("--frame-jitter", type=float, default=0.0,
+    parser.add_argument("--lr",         type=float, default=1e-4,
+                        help="Learning rate for LLM LoRA (default: 1e-4)")
+    parser.add_argument("--vision-lr",  type=float, default=5e-5,
+                        help="Differential LR for vision encoder LoRA params (default: 5e-5). "
+                             "Set lower than --lr to limit catastrophic shift of SigLIP features.")
+    parser.add_argument("--frame-jitter", type=float, default=1.5,
                         help="Temporal start-time jitter in seconds (uniform U(-J,+J)); 0 = disabled. "
                              "Cheap augmentation against fixed sub-clip windows; bypasses frame cache on jittered samples.")
-    parser.add_argument("--batch",      type=int, default=32,
+    parser.add_argument("--batch",      type=int, default=8,
                         help="Per-device train batch size")
-    parser.add_argument("--grad-accum", type=int, default=1,
+    parser.add_argument("--grad-accum", type=int, default=4,
                         help="Gradient accumulation steps")
     parser.add_argument("--data-root",     default=_DATA_ROOT,
                         help="Root directory of dataset")
@@ -696,6 +697,8 @@ def main():
     parser.add_argument("--val-json", default=None,
                         help="Path to validation JSON (default: <data-root>/classified/UCFCrime_Val_deepseek_v4_pro.json)")
     args = parser.parse_args()
+    if args.no_lora:
+        args.lora = False
 
     if not torch.cuda.is_available():
         if args.force_cpu:
