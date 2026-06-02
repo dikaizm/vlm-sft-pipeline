@@ -231,7 +231,7 @@ def _load_anomaly_test_ids() -> set[str]:
     return ids
 
 
-def load_test_samples(n: int, crime_ratio: float = 0.5) -> list[dict]:
+def load_test_samples(n: int, crime_ratio: float = 0.8) -> list[dict]:
     with open(TEST_JSON) as f:
         data = json.load(f)
 
@@ -332,7 +332,7 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 
 
 def run_inference(model, processor, device, frames: list, start: float, end: float, prompt: str,
-                  do_sample: bool = False, temperature: float = 0.7,
+                  do_sample: bool = False, temperature: float = 0.8,
                   top_p: float = 0.9, repetition_penalty: float = 1.0,
                   constrained: bool = False) -> str:
     messages = [
@@ -380,13 +380,13 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n",           type=int, default=5,            help="Number of test clips")
-    parser.add_argument("--crime-ratio", type=float, default=0.5,        help="Fraction of clips from crime classes (default: 0.5)")
+    parser.add_argument("--crime-ratio", type=float, default=0.8,        help="Fraction of clips from crime classes (default: 0.8)")
     parser.add_argument("--finetuned",   default=FINETUNED_DIR,          help="Fine-tuned model dir")
     parser.add_argument("--no-zeroshot", action="store_true",            help="Skip zero-shot model")
     parser.add_argument("--output",      default=None,                   help="Path to save JSON results (default: OUTPUT_DIR/results/<run>.json)")
     parser.add_argument("--no-mlflow",   action="store_true",            help="Disable MLflow logging")
     parser.add_argument("--sample",      action="store_true",            help="Use sampling instead of greedy decoding (more diverse but noisier metrics)")
-    parser.add_argument("--temperature", type=float, default=0.7,        help="Sampling temperature (default: 0.7, only used with --sample)")
+    parser.add_argument("--temperature", type=float, default=0.8,        help="Sampling temperature (default: 0.8, only used with --sample)")
     parser.add_argument("--top-p",       type=float, default=0.9,        help="Top-p nucleus sampling (default: 0.9, only used with --sample)")
     parser.add_argument("--rep-penalty", type=float, default=1.3,        help="Repetition penalty (default: 1.3; set 1.0 to disable)")
     parser.add_argument("--constrained", action="store_true",            help="Constrain first tokens to valid [ClassName] (class-first model only)")
