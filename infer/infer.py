@@ -186,10 +186,9 @@ UCF_CLASSES = frozenset([
 
 PROMPT = (
     "Watch this surveillance video clip carefully. "
-    "Respond with exactly: [ClassName] followed by one sentence describing the activity. "
-    "Use square brackets exactly as shown. "
-    "ClassName must be one of: Normal, Abuse, Arrest, Arson, Assault, Burglary, Explosion, "
-    "Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism."
+    "Identify the activity class from: Normal, Abuse, Arrest, Arson, Assault, Burglary, "
+    "Explosion, Fighting, RoadAccidents, Robbery, Shooting, Shoplifting, Stealing, Vandalism. "
+    "Respond with [ClassName] followed by one sentence describing the activity."
 )
 
 
