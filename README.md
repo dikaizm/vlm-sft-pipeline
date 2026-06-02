@@ -62,7 +62,7 @@ This raises the effective class-token contribution from ~8% to ~30% of the total
 
 ### Class-Aware Sampling
 
-UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime spread across 13 crime classes (~80 samples each). Scalar loss weighting (`crime-weight=3`) leaves minority crime tokens with ~38× less exposure than `[Normal]`.
+UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime spread across 13 crime classes (~80 samples each).
 
 `SurveillanceTrainer._get_train_sampler` supports three modes via `--sampler`:
 
@@ -75,8 +75,6 @@ UCF-Crime is heavily imbalanced: ~90% Normal, ~10% crime spread across 13 crime 
 **Why `sqrt` (not full balance)**: Full balancing (`1/count`) showed all 14 class tokens per batch with equal frequency. On a 500M model, gradient pulled toward 14 different class-token destinations simultaneously, causing collapse — model defaulted to emitting the literal `[ClassName]` placeholder from the prompt template (Unknown rate 0.95 at step 400 vs 0.65 at step 300 with raw distribution).
 
 Sqrt scaling keeps Normal as the majority anchor (~46%) while giving each crime class ~5× the exposure of raw distribution. The model retains a clear default but receives enough minority-class signal to differentiate.
-
-`CRIME_WEIGHT` is preserved as a CLI option for additional emphasis on top of the sampler, but defaults to `1.0` (disabled).
 
 ### Constrained Decoding (Optional)
 
@@ -100,12 +98,11 @@ Use only with checkpoints trained on this branch. Applying constrained decoding 
 | Trainable params | ~30M / 2.2B (~1.3%) | LoRA adapters on LLM + SigLIP vision encoder for surveillance domain adaptation |
 | Epochs | 3 | Full UCF-Crime train split |
 | LR | 1e-4 | LoRA typically uses 5–10× higher LR than full FT |
-| Batch | 16 | Effective 32 with grad_accum=2 |
-| Grad accum | 2 | |
+| Batch | 8 | Effective 32 with grad_accum=4 |
+| Grad accum | 4 | |
 | Frames/sec | 4 | Up to 48 frames per sub-clip |
 | Segment | 12s | 75% overlap (9s stride) |
-| Max length | 4096 | 3072 visual + ~1024 text |
-| CRIME_WEIGHT | 1.0 | Disabled by default — class-balanced sampler handles imbalance |
+| Max length | 8192 | 3888 visual (81 tokens/frame × 48) + ~1024 text |
 | Sampler | sqrt | WeightedRandomSampler, 1/sqrt(class_count) — minority boost without collapse |
 | CLASS_TOKEN_WEIGHT | 5.0 | `[ClassName]` bracket token multiplier |
 | Optimizer | adamw_bnb_8bit | 8-bit Adam on CUDA |
