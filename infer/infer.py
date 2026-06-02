@@ -381,6 +381,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n",           type=int, default=5,            help="Number of test clips")
     parser.add_argument("--crime-ratio", type=float, default=0.8,        help="Fraction of clips from crime classes (default: 0.8)")
+    parser.add_argument("--context-pad", type=float, default=5.0,        help="Seconds to pad before/after annotation (default: 5.0)")
     parser.add_argument("--finetuned",   default=FINETUNED_DIR,          help="Fine-tuned model dir")
     parser.add_argument("--no-zeroshot", action="store_true",            help="Skip zero-shot model")
     parser.add_argument("--output",      default=None,                   help="Path to save JSON results (default: OUTPUT_DIR/results/<run>.json)")
@@ -483,10 +484,12 @@ def main():
     for i, s in enumerate(samples, 1):
         print(sep)
         print(f"[{i}/{len(samples)}] {s['video_id']}")
-        print(f"  Clip  : {s['start']:.1f}s – {s['end']:.1f}s")
+        pad_start = max(0.0, s["start"] - args.context_pad)
+        pad_end   = s["end"] + args.context_pad
+        print(f"  Clip  : {s['start']:.1f}s – {s['end']:.1f}s  (padded: {pad_start:.1f}s – {pad_end:.1f}s)")
         print(f"  GT    : {s['gt']}")
 
-        frames = extract_frames(s["video_path"], s["start"], s["end"], NUM_FRAMES)
+        frames = extract_frames(s["video_path"], pad_start, pad_end, NUM_FRAMES)
 
         record = {
             "video_id":  s["video_id"],
@@ -502,14 +505,14 @@ def main():
                             constrained=args.constrained)
 
         if zs_model is not None:
-            zs_out = run_inference(zs_model, zs_processor, device, frames, s["start"], s["end"], PROMPT,
+            zs_out = run_inference(zs_model, zs_processor, device, frames, pad_start, pad_end, PROMPT,
                                    **infer_kwargs)
             zs_cls = parse_class(zs_out)
             print(f"  ZeroShot : {zs_out}")
             record["zeroshot"]       = zs_out
             record["zeroshot_class"] = zs_cls
 
-        ft_out = run_inference(ft_model, ft_processor, device, frames, s["start"], s["end"], PROMPT,
+        ft_out = run_inference(ft_model, ft_processor, device, frames, pad_start, pad_end, PROMPT,
                                **infer_kwargs)
         ft_cls = parse_class(ft_out)
         print(f"  FineTuned: {ft_out}")
