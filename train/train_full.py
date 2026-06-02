@@ -664,14 +664,16 @@ def _collate_fn_image_mode(batch: list[dict], processor, is_train: bool = True) 
         )
         encoded_list.append({k: v.squeeze(0) for k, v in enc.items()})
 
-    # Pad batch
+    # Pad text fields, flat-concat image fields (variable images per sample)
     from torch.nn.utils.rnn import pad_sequence
     pad_id = processor.tokenizer.pad_token_id or 0
     input_ids      = pad_sequence([e["input_ids"]      for e in encoded_list], batch_first=True, padding_value=pad_id)
     attention_mask = pad_sequence([e["attention_mask"] for e in encoded_list], batch_first=True, padding_value=0)
     encoded = {"input_ids": input_ids, "attention_mask": attention_mask}
-    if "pixel_values" in encoded_list[0]:
-        encoded["pixel_values"] = torch.cat([e["pixel_values"].unsqueeze(0) for e in encoded_list], dim=0)
+    # Image-side tensors: first dim is "all images in batch flattened", concat
+    for img_key in ("pixel_values", "pixel_attention_mask", "spatial_shapes"):
+        if img_key in encoded_list[0]:
+            encoded[img_key] = torch.cat([e[img_key] for e in encoded_list], dim=0)
 
     split_positions = _find_split_positions(encoded, processor)
     return _apply_label_masking(encoded, batch, processor, split_positions)
@@ -693,9 +695,17 @@ def apply_lora(model, rank: int, logger):
         task_type=TaskType.CAUSAL_LM,
         r=rank,
         lora_alpha=rank * 2,
-        target_modules=["down_proj", "o_proj", "k_proj", "q_proj",
-                        "gate_proj", "up_proj", "v_proj",
-                        "out_proj", "fc1", "fc2"],
+        target_modules=[
+            # SmolVLM2/Qwen3-VL LLM attention + MLP
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+            # SmolVLM2 vision (SigLIP)
+            "out_proj", "fc1", "fc2",
+            # Qwen3-VL vision (fused QKV + Linear fc + output proj)
+            "qkv", "linear_fc1", "linear_fc2", "proj",
+            # LFM2-VL SwiGLU MLP + projector
+            "w1", "w2", "w3", "in_proj", "linear_1", "linear_2",
+        ],
         lora_dropout=0.05,
         use_dora=True,
         init_lora_weights="gaussian",
@@ -760,9 +770,9 @@ def main():
                         help="Override eval interval (steps). Default: min(steps_per_epoch, 100).")
     parser.add_argument("--save-steps", type=int, default=None,
                         help="Override checkpoint save interval (steps). Default: same as eval-steps.")
-    parser.add_argument("--max-normal", type=int, default=-1,
+    parser.add_argument("--max-normal", type=int, default=1500,
                         help="Cap Normal class samples (undersample). -1 = no cap. "
-                             "E.g. 1500 flips data to crime-majority for class-first prior fix.")
+                             "Default 1500 flips data to crime-majority for class-first prior fix.")
     parser.add_argument("--sampler", choices=["raw", "sqrt", "balanced"], default="sqrt",
                         help="Class-aware sampler mode. raw=natural distribution (~90%% Normal), "
                              "sqrt=weight 1/sqrt(count) (Normal ~46%%, minority ~4%% each — recommended for 500M), "
