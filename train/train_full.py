@@ -488,7 +488,74 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 
 FRAME_JITTER = 0.0  # set from CLI; >0 enables temporal start jitter (seconds, train only)
 
+
+def _is_image_mode_processor(processor) -> bool:
+    """Processors that expect frames as individual images (e.g. LFM2-VL)."""
+    return type(processor).__name__ == "Lfm2VlProcessor"
+
+
+def _get_assistant_marker(processor) -> list[int]:
+    """Token IDs marking start of assistant response after add_generation_prompt."""
+    name = type(processor).__name__
+    if _is_image_mode_processor(processor) or "Qwen" in name:
+        marker = "<|im_start|>assistant\n"
+    else:
+        marker = "Assistant:"
+    return processor.tokenizer.encode(marker, add_special_tokens=False)
+
+def _apply_label_masking(encoded: dict, batch: list[dict], processor, split_positions: list[int | None]) -> dict:
+    """Mask prompt tokens in labels and apply CLASS_TOKEN_WEIGHT."""
+    labels = encoded["input_ids"].clone()
+
+    for i, (ids, split_pos) in enumerate(zip(labels, split_positions)):
+        if split_pos is not None:
+            labels[i, :split_pos] = -100
+        else:
+            labels[i] = torch.full_like(ids, -100)
+
+    labels[labels == processor.tokenizer.pad_token_id] = -100
+    encoded["labels"] = labels
+
+    token_weight = torch.ones_like(labels, dtype=torch.float32)
+    for i, sample in enumerate(batch):
+        sp = split_positions[i]
+        if sp is None:
+            continue
+        cls = sample.get("class", "Normal")
+        class_ids = processor.tokenizer.encode(f" [{cls}]", add_special_tokens=False)
+        ids_list  = encoded["input_ids"][i].tolist()
+        match_pos = None
+        for offset in range(4):
+            pos = sp + offset
+            if pos + len(class_ids) <= len(ids_list) and ids_list[pos : pos + len(class_ids)] == class_ids:
+                match_pos = pos
+                break
+        if match_pos is None:
+            match_pos = sp
+        end_pos = min(match_pos + len(class_ids), labels.shape[1])
+        token_weight[i, match_pos:end_pos] = float(CLASS_TOKEN_WEIGHT)
+    encoded["token_weight"] = token_weight
+    return encoded
+
+
+def _find_split_positions(encoded: dict, processor) -> list[int | None]:
+    assistant_token = _get_assistant_marker(processor)
+    split_positions = []
+    for ids in encoded["input_ids"]:
+        ids_list  = ids.tolist()
+        split_pos = None
+        for j in range(len(ids_list) - len(assistant_token), -1, -1):
+            if ids_list[j : j + len(assistant_token)] == assistant_token:
+                split_pos = j + len(assistant_token)
+                break
+        split_positions.append(split_pos)
+    return split_positions
+
+
 def collate_fn(batch: list[dict], processor, is_train: bool = True) -> dict:
+    if _is_image_mode_processor(processor):
+        return _collate_fn_image_mode(batch, processor, is_train)
+
     texts       = []
     frame_lists = []
     metadatas   = []
@@ -551,50 +618,64 @@ def collate_fn(batch: list[dict], processor, is_train: bool = True) -> dict:
         max_length=MAX_LENGTH,
     )
 
-    labels = encoded["input_ids"].clone()
-    split_positions: list[int | None] = []
+    split_positions = _find_split_positions(encoded, processor)
+    return _apply_label_masking(dict(encoded), batch, processor, split_positions)
 
-    assistant_token = processor.tokenizer.encode("Assistant:", add_special_tokens=False)
-    for i, ids in enumerate(labels):
-        ids_list  = ids.tolist()
-        split_pos = None
-        for j in range(len(ids_list) - len(assistant_token), -1, -1):
-            if ids_list[j : j + len(assistant_token)] == assistant_token:
-                split_pos = j + len(assistant_token)
-                break
-        split_positions.append(split_pos)
-        if split_pos is not None:
-            labels[i, :split_pos] = -100
-        else:
-            labels[i] = torch.full_like(ids, -100)
 
-    labels[labels == processor.tokenizer.pad_token_id] = -100
-    encoded["labels"] = labels
+def _collate_fn_image_mode(batch: list[dict], processor, is_train: bool = True) -> dict:
+    """Collator for image-mode processors (LFM2-VL): frames as individual images."""
+    all_images  = []  # flat list per sample → list of lists
+    texts       = []
 
-    # Per-token weight: upweight [ClassName] bracket tokens (first tokens of GT in class-first format)
-    token_weight = torch.ones_like(labels, dtype=torch.float32)
-    for i, sample in enumerate(batch):
-        sp = split_positions[i]
-        if sp is None:
-            continue
+    for sample in batch:
+        start, end = sample["start"], sample["end"]
+        if is_train and FRAME_JITTER > 0:
+            shift = random.uniform(-FRAME_JITTER, FRAME_JITTER)
+            new_start = max(0.0, start + shift)
+            new_end   = new_start + (end - start)
+            start, end = new_start, new_end
+        n_frames = adaptive_n_frames(start, end)
+        frames = load_or_extract_frames(sample["video_path"], start, end, n_frames)
+        all_images.append(frames)
+
         cls = sample.get("class", "Normal")
-        # Leading space matches context tokenization: chat template renders
-        # "Assistant: [Class]" where ' [' is a single combined token
-        class_ids = processor.tokenizer.encode(f" [{cls}]", add_special_tokens=False)
-        ids_list  = encoded["input_ids"][i].tolist()
-        match_pos = None
-        for offset in range(4):
-            pos = sp + offset
-            if pos + len(class_ids) <= len(ids_list) and ids_list[pos : pos + len(class_ids)] == class_ids:
-                match_pos = pos
-                break
-        if match_pos is None:
-            match_pos = sp
-        end_pos = min(match_pos + len(class_ids), labels.shape[1])
-        token_weight[i, match_pos:end_pos] = float(CLASS_TOKEN_WEIGHT)
-    encoded["token_weight"] = token_weight
+        gt  = f"[{cls}] {sample['sentence']}"
 
-    return dict(encoded)
+        content = [{"type": "image"} for _ in frames]
+        content.append({"type": "text", "text": PROMPT})
+        messages = [
+            {"role": "user",      "content": content},
+            {"role": "assistant", "content": [{"type": "text", "text": gt}]},
+        ]
+        text = processor.apply_chat_template(
+            messages, add_generation_prompt=False, tokenize=False
+        )
+        texts.append(text)
+
+    # Process each sample individually then pad (variable image count per sample)
+    encoded_list = []
+    for text, frames in zip(texts, all_images):
+        enc = processor(
+            images=frames,
+            text=text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=MAX_LENGTH,
+        )
+        encoded_list.append({k: v.squeeze(0) for k, v in enc.items()})
+
+    # Pad batch
+    from torch.nn.utils.rnn import pad_sequence
+    pad_id = processor.tokenizer.pad_token_id or 0
+    input_ids      = pad_sequence([e["input_ids"]      for e in encoded_list], batch_first=True, padding_value=pad_id)
+    attention_mask = pad_sequence([e["attention_mask"] for e in encoded_list], batch_first=True, padding_value=0)
+    encoded = {"input_ids": input_ids, "attention_mask": attention_mask}
+    if "pixel_values" in encoded_list[0]:
+        encoded["pixel_values"] = torch.cat([e["pixel_values"].unsqueeze(0) for e in encoded_list], dim=0)
+
+    split_positions = _find_split_positions(encoded, processor)
+    return _apply_label_masking(encoded, batch, processor, split_positions)
+
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +775,8 @@ def main():
                         help="Disable gradient checkpointing. Only use on GPUs with extreme VRAM (>400 GB).")
     parser.add_argument("--force-cpu", action="store_true",
                         help="Force CPU training (disables MPS). Slow but avoids MPS OOM on local Mac.")
+    parser.add_argument("--trust-remote-code", action="store_true",
+                        help="Pass trust_remote_code=True to model/processor (needed for LFM2-VL etc.)")
     parser.add_argument("--train-json", default=None,
                         help="Path to training JSON (default: <data-root>/classified/UCFCrime_Train_deepseek_v4_pro.json)")
     parser.add_argument("--val-json", default=None,
@@ -808,7 +891,7 @@ def main():
 
         # --- Model & processor ---
         logger.info("Loading model and processor...")
-        processor = AutoProcessor.from_pretrained(args.model)
+        processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
 
         # flash_attention_2 > sdpa > eager (fallback chain)
         try:
@@ -831,6 +914,7 @@ def main():
             dtype=_dtype,
             _attn_implementation=attn_impl,
             device_map=_device_map,
+            trust_remote_code=args.trust_remote_code,
         )
         if args.force_cpu:
             model = model.to("cpu")
