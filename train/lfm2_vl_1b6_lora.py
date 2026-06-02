@@ -63,8 +63,6 @@ sys.argv = [
     "--sampler",            SAMPLER,
     "--class-token-weight", str(CLASS_TOKEN_W),
     "--frame-jitter",       str(FRAME_JITTER),
-    "--eval-during-training",
-    "--eval-steps",         str(EVAL_STEPS),
     "--save-steps",         str(SAVE_STEPS),
     "--data-root",          DATA_ROOT,
     "--output",             OUTPUT_DIR,
