@@ -201,10 +201,12 @@ class SurveillanceTrainer(Trainer):
                 continue
             (vision_params if "vision_model" in n else other_params).append(p)
 
-        from transformers.trainer_pt_utils import get_parameter_names
-        from torch import nn
-        decay_names = set(get_parameter_names(self.model, [nn.LayerNorm]))
-        # Simple two-group split; weight decay handled by optimizer defaults
+        if not vision_params or not other_params:
+            logging.getLogger("train_full").warning(
+                f"Differential LR skipped: vision_params={len(vision_params)}, "
+                f"other_params={len(other_params)} — falling back to single LR")
+            return super().create_optimizer()
+
         param_groups = [
             {"params": other_params, "lr": self.args.learning_rate},
             {"params": vision_params, "lr": self.vision_lr},
@@ -212,9 +214,10 @@ class SurveillanceTrainer(Trainer):
         optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
         optimizer_kwargs.pop("lr", None)
         self.optimizer = optimizer_cls(param_groups, **optimizer_kwargs)
-        logger.info(f"Differential LR: LLM={self.args.learning_rate}  Vision={self.vision_lr}  "
-                    f"(vision params: {sum(p.numel() for p in vision_params)/1e6:.1f}M, "
-                    f"LLM params: {sum(p.numel() for p in other_params)/1e6:.1f}M)")
+        logging.getLogger("train_full").info(
+            f"Differential LR: LLM={self.args.learning_rate}  Vision={self.vision_lr}  "
+            f"(vision params: {sum(p.numel() for p in vision_params)/1e6:.1f}M, "
+            f"LLM params: {sum(p.numel() for p in other_params)/1e6:.1f}M)")
         return self.optimizer
 
     def _get_train_sampler(self, train_dataset=None):
