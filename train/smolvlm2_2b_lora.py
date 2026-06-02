@@ -1,9 +1,9 @@
 """
-LoRA fine-tune: LiquidAI/LFM2-VL-1.6B on UCF-Crime + UCA dataset.
-All config hardcoded below. Run on CUDA GPU (>=12GB VRAM).
+LoRA fine-tune: HuggingFaceTB/SmolVLM2-2.2B-Instruct on UCF-Crime + UCA dataset.
+All config hardcoded below. Tuned for RTX PRO 6000 Blackwell (96GB VRAM).
 
 Usage:
-    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/run_lfm2_vl_1b6_lora.py
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/smolvlm2_2b_lora.py
 """
 
 import sys
@@ -14,26 +14,28 @@ from pathlib import Path
 # Hardcoded config
 # ---------------------------------------------------------------------------
 
-MODEL_ID      = "LiquidAI/LFM2-VL-1.6B"
+MODEL_ID      = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
 DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
-OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / "lfm2-vl-1b6-lora")
+OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / "smolvlm2-2b-lora")
 
 MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
 MLFLOW_EXPERIMENT = "vlm-surveillance"
 
-LORA_RANK     = 16
+# 96GB VRAM — big batch, more frames, higher LoRA rank, no grad checkpointing
+LORA_RANK     = 32   # 16→32: more capacity, VRAM is not a constraint
 EPOCHS        = 3
 LR            = 1e-4
 VISION_LR     = 5e-5
-BATCH         = 4
-GRAD_ACCUM    = 4
-MAX_FRAMES    = 16
+BATCH         = 16   # 4→16: fills VRAM, reduces wall time
+GRAD_ACCUM    = 2    # effective batch = 32
+MAX_FRAMES    = 32   # 16→32: better temporal coverage per clip
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
 CLASS_TOKEN_W = 5.0
 FRAME_JITTER  = 1.5
-EVAL_STEPS    = 100
-SAVE_STEPS    = 100
+EVAL_STEPS    = 50
+SAVE_STEPS    = 50
+NO_GRAD_CKPT  = True  # disable grad checkpointing — faster, 96GB has headroom
 
 # Must be set before train_full is imported (module-level constants read at import time)
 os.environ["MLFLOW_URI"]        = MLFLOW_URI
@@ -46,7 +48,6 @@ os.environ["MLFLOW_EXPERIMENT"] = MLFLOW_EXPERIMENT
 sys.argv = [
     "train_full.py",
     "--model",              MODEL_ID,
-    "--trust-remote-code",
     "--lora",
     "--lora-rank",          str(LORA_RANK),
     "--max-train",          "-1",
@@ -66,6 +67,7 @@ sys.argv = [
     "--save-steps",         str(SAVE_STEPS),
     "--data-root",          DATA_ROOT,
     "--output",             OUTPUT_DIR,
+    *(["--no-grad-checkpoint"] if NO_GRAD_CKPT else []),
 ]
 
 # ---------------------------------------------------------------------------
