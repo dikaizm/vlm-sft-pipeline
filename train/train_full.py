@@ -473,7 +473,7 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 
 FRAME_JITTER = 0.0  # set from CLI; >0 enables temporal start jitter (seconds, train only)
 
-def collate_fn(batch: list[dict], processor, model, is_train: bool = True) -> dict:
+def collate_fn(batch: list[dict], processor, is_train: bool = True) -> dict:
     texts       = []
     frame_lists = []
     metadatas   = []
@@ -770,7 +770,7 @@ def main():
         "vram_gb":                     (round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1) if torch.cuda.is_available() else None),
         "task":                        "activity_description",
         "freeze_vision":               args.freeze_vision,
-        "dataloader_workers":          4,
+        "dataloader_workers":          8,
         "frame_cache":                 bool(FRAME_CACHE_DIR),
         "seed":                        SEED,
         "class_token_weight":          args.class_token_weight,
@@ -905,14 +905,15 @@ def main():
             seed=SEED,
         )
 
-        collator = functools.partial(collate_fn, processor=processor, model=model)
+        train_collator = functools.partial(collate_fn, processor=processor, is_train=True)
+        val_collator   = functools.partial(collate_fn, processor=processor, is_train=False)
 
         trainer = SurveillanceTrainer(
             model=model,
             args=training_args,
             train_dataset=train_ds,
             eval_dataset=val_ds,
-            data_collator=collator,
+            data_collator=train_collator,
             callbacks=[MLflowMetricsCallback()],
         )
         trainer.sampler_mode = args.sampler
