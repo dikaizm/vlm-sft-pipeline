@@ -329,7 +329,7 @@ def _segment_clip(start: float, end: float, sentence: str,
     return segments
 
 
-def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dict]:
+def _load_samples(json_path: str, video_root: str, max_samples: int, max_normal: int = -1) -> list[dict]:
     with open(json_path) as f:
         data = json.load(f)
 
@@ -364,6 +364,18 @@ def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dic
     log.info(
         f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
     )
+
+    # Undersample Normal class if cap requested
+    if max_normal > 0:
+        normal_items = [it for it in items if it["class"] == "Normal"]
+        other_items  = [it for it in items if it["class"] != "Normal"]
+        n_before = len(normal_items)
+        if n_before > max_normal:
+            normal_items = normal_items[:max_normal]
+            log.info(f"  Undersampled Normal: {n_before} → {len(normal_items)} sub-clips")
+        items = normal_items + other_items
+        random.shuffle(items)
+
     # Class distribution audit (post-filter)
     from collections import Counter as _Counter
     cls_counts = _Counter(it["class"] for it in items)
@@ -375,8 +387,8 @@ def _load_samples(json_path: str, video_root: str, max_samples: int) -> list[dic
     return items if max_samples == -1 else items[:max_samples]
 
 
-def build_dataset(json_path: str, video_root: str, max_samples: int, logger) -> Dataset:
-    samples = _load_samples(json_path, video_root, max_samples)
+def build_dataset(json_path: str, video_root: str, max_samples: int, logger, max_normal: int = -1) -> Dataset:
+    samples = _load_samples(json_path, video_root, max_samples, max_normal=max_normal)
     logger.info(f"Dataset: {len(samples)} samples from {Path(json_path).name}")
     return Dataset.from_list(samples)
 
@@ -667,6 +679,9 @@ def main():
                         help="Override eval interval (steps). Default: min(steps_per_epoch, 100).")
     parser.add_argument("--save-steps", type=int, default=None,
                         help="Override checkpoint save interval (steps). Default: same as eval-steps.")
+    parser.add_argument("--max-normal", type=int, default=-1,
+                        help="Cap Normal class samples (undersample). -1 = no cap. "
+                             "E.g. 1500 flips data to crime-majority for class-first prior fix.")
     parser.add_argument("--sampler", choices=["raw", "sqrt", "balanced"], default="sqrt",
                         help="Class-aware sampler mode. raw=natural distribution (~90%% Normal), "
                              "sqrt=weight 1/sqrt(count) (Normal ~46%%, minority ~4%% each — recommended for 500M), "
@@ -859,7 +874,7 @@ def main():
 
         # --- Dataset ---
         logger.info("Building datasets...")
-        train_ds = build_dataset(train_json, video_root, args.max_train, logger)
+        train_ds = build_dataset(train_json, video_root, args.max_train, logger, max_normal=args.max_normal)
         val_ds   = build_dataset(val_json,   video_root, args.max_val,   logger)
 
         # Eval every ~20% of training steps, save best checkpoint
