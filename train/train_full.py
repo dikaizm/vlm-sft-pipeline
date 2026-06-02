@@ -91,9 +91,6 @@ SEED           = 42
 # Set to None to disable.
 FRAME_CACHE_DIR = os.environ.get("FRAME_CACHE_DIR", str(_PIPELINE_ROOT / "frame_cache"))
 
-# Crime weight: multiplier applied to loss on crime-class samples (set from --crime-weight arg)
-CRIME_WEIGHT = 3.0
-
 # Per-token weight on [ClassName] bracket tokens — boosts gradient signal for classification.
 # Counteracts gradient dilution: class is ~4 tokens vs ~50 description tokens in a typical GT.
 CLASS_TOKEN_WEIGHT = 5.0
@@ -174,11 +171,10 @@ class MLflowMetricsCallback(TrainerCallback):
 # ---------------------------------------------------------------------------
 
 class SurveillanceTrainer(Trainer):
-    """Trainer with per-sample crime weighting + per-token class-bracket weighting.
+    """Trainer with per-token class-bracket weighting and class-aware sampling.
 
     Batch must contain:
-      - 'sample_weight' [B]: crime clips weighted higher than Normal
-      - 'token_weight'  [B, T]: [ClassName] bracket tokens weighted higher (counteracts
+      - 'token_weight' [B, T]: [ClassName] bracket tokens weighted higher (counteracts
         gradient dilution where class is ~4 tokens vs ~50 description tokens)
 
     Loss formulation (matches Idefics3/SmolVLM2 internal shift):
@@ -186,7 +182,7 @@ class SurveillanceTrainer(Trainer):
       - Ignore positions where label == -100 (system/user tokens, padding)
       - Per-token CE × token_weight × valid_mask
       - Per-sample loss = weighted mean over valid tokens
-      - Batch loss     = sample_weight-weighted mean over samples
+      - Batch loss     = mean over samples
     """
 
     sampler_mode: str = "sqrt"   # set from CLI via SurveillanceTrainer.sampler_mode
@@ -259,13 +255,12 @@ class SurveillanceTrainer(Trainer):
         )
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        weights      = inputs.pop("sample_weight", None)
-        token_weight = inputs.pop("token_weight",  None)
+        token_weight = inputs.pop("token_weight", None)
         outputs = model(**inputs)
 
         # Skip custom weighted loss in eval: gradients don't matter, and the
         # reduction="none" path materializes [B, T, V] tensor — OOMs on large eval batches.
-        if weights is None or not model.training:
+        if token_weight is None or not model.training:
             loss = outputs.loss
         else:
             logits = outputs.logits          # [B, T, V]
@@ -288,14 +283,13 @@ class SurveillanceTrainer(Trainer):
             mask = (shift_labels != -100).float()
 
             # Per-token weight: class bracket tokens get CLASS_TOKEN_WEIGHT, others 1.0
-            if token_weight is not None:
-                shift_tw = token_weight[..., 1:].to(per_token.device)
-                mask = mask * shift_tw
+            shift_tw = token_weight[..., 1:].to(per_token.device)
+            mask = mask * shift_tw
 
             denom = mask.sum(-1).clamp(min=1)
             per_sample = (per_token * mask).sum(-1) / denom   # [B]
 
-            loss = (per_sample * weights.to(per_sample.device)).mean()
+            loss = per_sample.mean()
 
         return (loss, outputs) if return_outputs else loss
 
@@ -585,13 +579,6 @@ def collate_fn(batch: list[dict], processor, model, is_train: bool = True) -> di
         token_weight[i, match_pos:end_pos] = float(CLASS_TOKEN_WEIGHT)
     encoded["token_weight"] = token_weight
 
-    # Per-sample weight: crime clips weighted higher than Normal
-    weights = []
-    for sample in batch:
-        cls = sample.get("class", "Normal")
-        weights.append(1.0 if cls == "Normal" else float(CRIME_WEIGHT))
-    encoded["sample_weight"] = torch.tensor(weights, dtype=torch.float32)
-
     return dict(encoded)
 
 
@@ -670,9 +657,6 @@ def main():
     parser.add_argument("--resume", default=None,
                         help="Resume from checkpoint dir (e.g. ./output/.../checkpoint-1072). "
                              "Optimizer state loaded if present; otherwise resumes from model weights only.")
-    parser.add_argument("--crime-weight", type=float, default=1.0,
-                        help="Loss multiplier for crime-class samples vs Normal (default: 1.0 — disabled). "
-                             "Redundant with class-balanced sampler. Set >1.0 to add extra crime emphasis on top.")
     parser.add_argument("--class-token-weight", type=float, default=5.0,
                         help="Per-token loss multiplier for [ClassName] bracket tokens (default: 5.0). "
                              "Set to 1.0 to disable.")
@@ -710,10 +694,9 @@ def main():
               "For full training use a CUDA GPU.")
 
     # Apply frame cache config (CLI overrides env)
-    global FRAME_CACHE_DIR, CRIME_WEIGHT, CLASS_TOKEN_WEIGHT, FRAME_JITTER
+    global FRAME_CACHE_DIR, CLASS_TOKEN_WEIGHT, FRAME_JITTER
     if args.frame_cache:
         FRAME_CACHE_DIR = args.frame_cache
-    CRIME_WEIGHT       = args.crime_weight
     CLASS_TOKEN_WEIGHT = args.class_token_weight
     FRAME_JITTER       = args.frame_jitter
 
@@ -743,7 +726,6 @@ def main():
     logger.info(f"Epochs     : {args.epochs}  LR: {args.lr}  Batch: {args.batch}  GradAccum: {args.grad_accum}")
     logger.info(f"Frames     : {FRAMES_PER_SEC}fps  max={MAX_FRAMES}  min={MIN_FRAMES}  seg={SEG_DURATION:.1f}s  stride={SEG_STRIDE:.1f}s  MaxLen: {MAX_LENGTH}")
     logger.info(f"Frame cache: {FRAME_CACHE_DIR or 'disabled'}")
-    logger.info(f"Crime weight: {args.crime_weight}x (Normal=1.0)")
     logger.info(f"Sampler    : {args.sampler} (raw=natural, sqrt=1/sqrt(count), balanced=1/count)")
     logger.info(f"Class-token weight: {args.class_token_weight}x ([ClassName] bracket tokens)")
     if args.vision_lr is not None:
@@ -791,7 +773,6 @@ def main():
         "dataloader_workers":          4,
         "frame_cache":                 bool(FRAME_CACHE_DIR),
         "seed":                        SEED,
-        "crime_weight":                args.crime_weight,
         "class_token_weight":          args.class_token_weight,
     }
 
