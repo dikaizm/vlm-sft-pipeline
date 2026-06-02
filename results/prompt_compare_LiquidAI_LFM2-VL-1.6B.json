@@ -1,0 +1,307 @@
+{
+  "model": "LiquidAI/LFM2-VL-1.6B",
+  "n_clips": 25,
+  "crime_ratio": 0.8,
+  "context_pad": 5.0,
+  "metrics": {
+    "class_first": {
+      "unknown_rate": 0.4,
+      "cls_accuracy": 0.04,
+      "f1_macro": 0.0238,
+      "f1_weighted": 0.0667,
+      "binary_accuracy": 0.44,
+      "binary_f1": 0.5625,
+      "binary_precision": 0.75,
+      "binary_recall": 0.45,
+      "rougeL": 0.0239
+    },
+    "desc_first": {
+      "unknown_rate": 0.12,
+      "cls_accuracy": 0.2,
+      "f1_macro": 0.1063,
+      "f1_weighted": 0.2176,
+      "binary_accuracy": 0.48,
+      "binary_f1": 0.5806,
+      "binary_precision": 0.8182,
+      "binary_recall": 0.45,
+      "rougeL": 0.137
+    }
+  },
+  "clips": [
+    {
+      "video_id": "Explosion013_x264",
+      "start": 101.2,
+      "end": 110.5,
+      "gt": "A pipe sprayed fire several times.",
+      "gt_class": "Explosion",
+      "class_first": "Explosion. A large explosion has occurred in a warehouse or industrial setting, causing significant damage and debris scattered throughout the area.",
+      "class_first_class": "Explosion",
+      "desc_first": "The surveillance footage shows a firefighter actively battling a large blaze inside a building. The intense flames and smoke indicate that the fire is quite severe, but the presence of emergency personnel suggests they are working to control and extinguish the fire.\n\nClassification: FireFight[FireFight]",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Explosion016_x264",
+      "start": 3.3,
+      "end": 29.3,
+      "gt": "An explosion occurred in the distant building, and white smoke came out after a burst of fire.",
+      "gt_class": "Explosion",
+      "class_first": "Arsenic.",
+      "class_first_class": "Unknown",
+      "desc_first": "The surveillance footage shows a large building surrounded by a parking lot filled with cars and people walking around. There is smoke rising into the air near the top of the building's tower, suggesting some kind of fire or explosion has occurred. The scene appears to be taking place during daytime under an overcast sky.\n\nClassification: Fire/Explosion\n\n[Fire/Explosion]",
+      "desc_first_class": "Explosion"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 50.5,
+      "end": 79.9,
+      "gt": "The man rummaged for something on a nearby white shelf and put it on the Christmas tree",
+      "gt_class": "Arson",
+      "class_first": "Normal.",
+      "class_first_class": "Normal",
+      "desc_first": "A man is standing near a Christmas tree and appears to be putting something on it. This could potentially be classified as vandalism due to the unusual behavior of placing items on a holiday decoration.\n\nNormal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Vandalism036_x264",
+      "start": 35.7,
+      "end": 48.0,
+      "gt": "The shirtless man continued to push the shelves and then left from the door",
+      "gt_class": "Vandalism",
+      "class_first": "Shoplifting",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The surveillance footage shows a person standing behind a counter in what appears to be a convenience store or gas station. The individual seems to be engaged in some sort of transaction or interaction with items on display. Given the context and the lack of any overtly violent behavior, I would classify this as \"Normal\" activity.\n\nClassification: Normal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Vandalism036_x264",
+      "start": 14.3,
+      "end": 18.2,
+      "gt": "The shirtless man glanced inside the counter and suddenly threw an item on the counter to the ground.",
+      "gt_class": "Vandalism",
+      "class_first": "Robbery.",
+      "class_first_class": "Robbery",
+      "desc_first": "The security camera footage shows a shirtless man standing behind a counter in what appears to be a convenience store or gas station. He is likely waiting for customers to make purchases.\n\nNormal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Shoplifting034_x264",
+      "start": 216.9,
+      "end": 221.3,
+      "gt": "The man handed the thing to the woman, and the woman put it in the bag",
+      "gt_class": "Shoplifting",
+      "class_first": "Robbery. Two men are seen trying to steal items from a store while being confronted by a woman who is holding their hands down.",
+      "class_first_class": "Robbery",
+      "desc_first": "The security camera footage shows a man and woman standing inside a store, seemingly engaged in conversation or transaction. The woman is holding a purse on her shoulder. Based on the context provided by the image, I would classify this as \"Shopping\" because the individuals appear to be customers interacting within a retail environment.\n\nClassification: Shopping",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Burglary076_x264",
+      "start": 193.7,
+      "end": 203.9,
+      "gt": "Run over and put it in the car, then return to the house again.",
+      "gt_class": "Burglary",
+      "class_first": "Arrest. A man is walking towards a white car parked on the driveway of a house.",
+      "class_first_class": "Arrest",
+      "desc_first": "The surveillance footage shows a person walking towards a white car parked on the driveway of a house with a porch and columns painted green and white. The individual appears to be entering or exiting the vehicle.\n\nClassification: Abuse",
+      "desc_first_class": "Abuse"
+    },
+    {
+      "video_id": "RoadAccidents132_x264",
+      "start": 15.3,
+      "end": 30.4,
+      "gt": "The driver of the white car got out of the car and walked to the sidewalk",
+      "gt_class": "Normal",
+      "class_first": "Road accidents.",
+      "class_first_class": "Unknown",
+      "desc_first": "The image shows a white van driving on a road near a building and some parked cars. There is also a pedestrian crossing the street. Based on the available information, I would classify this as \"Road Accident\" since there are vehicles involved and no signs of active conflict or criminal behavior.\n\n[Classification: Road Accident]",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "RoadAccidents122_x264",
+      "start": 0.3,
+      "end": 15.1,
+      "gt": "A black car collided with a motorcycle while turning, and the motorcycle driver was knocked away",
+      "gt_class": "RoadAccidents",
+      "class_first": "Normal.",
+      "class_first_class": "Normal",
+      "desc_first": "The surveillance footage shows a parking lot area with several cars parked and some people walking around. There is no visible suspicious or criminal behavior occurring in the image. The scene appears to be normal traffic flow without any signs of abuse, arrest, arson, assault, burglary, explosion, fighting, road accidents, robbery, shoplifting, stealing, or vandalism.\n\n[Normal]",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 252.9,
+      "end": 287.6,
+      "gt": "The Christmas tree continues to burn, and thicker smoke comes out",
+      "gt_class": "Arson",
+      "class_first": "Arbusto",
+      "class_first_class": "Unknown",
+      "desc_first": "The surveillance footage shows a person walking through an empty room filled with furniture and decorations. The individual appears to be moving purposefully towards the door or window area of the space.\n\nNormal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Arson035_x264",
+      "start": 10.9,
+      "end": 18.9,
+      "gt": "A man in a hat came to a van and poured gasoline on the windshield",
+      "gt_class": "Arson",
+      "class_first": "Arbusto",
+      "class_first_class": "Unknown",
+      "desc_first": "A man is walking towards a white van parked on a narrow street lined with houses and doors. The scene appears to be captured by security cameras.\n\nNormal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Burglary079_x264",
+      "start": 113.0,
+      "end": 115.0,
+      "gt": "The man is hiding behind the car,",
+      "gt_class": "Burglary",
+      "class_first": "Arb",
+      "class_first_class": "Unknown",
+      "desc_first": "A man is bending over and looking into a car parked under an archway. The image appears to be taken by security cameras. This could possibly be classified as vandalism.\n\nVandalism",
+      "desc_first_class": "Vandalism"
+    },
+    {
+      "video_id": "Vandalism036_x264",
+      "start": 0.0,
+      "end": 8.6,
+      "gt": "A naked man walked into the store, walked to the counter, held the counter with both hands and looked around",
+      "gt_class": "Normal",
+      "class_first": "Shoplifting.",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The security camera footage shows a shirtless man standing behind the counter of a convenience store, likely engaging in some form of theft or shoplifting given his position and lack of clothing.\n\nClassification: Shoplifting",
+      "desc_first_class": "Shoplifting"
+    },
+    {
+      "video_id": "Explosion011_x264",
+      "start": 0.0,
+      "end": 52.3,
+      "gt": "A large number of vehicles and pedestrians are driving and moving.",
+      "gt_class": "Normal",
+      "class_first": "Road accidents.",
+      "class_first_class": "Unknown",
+      "desc_first": "The image shows a busy street scene with various vehicles including cars and motorcycles, as well as pedestrians on both sides of the road. There are also billboards visible along the side of the street. Based on the content of the image, I would classify this as \"Normal\" because it depicts everyday urban traffic without any signs of criminal or abnormal behavior.\n\nClassification: Normal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 115.8,
+      "end": 121.2,
+      "gt": "The man returned to the Christmas tree and continued to light the Christmas tree and successfully lit it.",
+      "gt_class": "Arson",
+      "class_first": "Normal.",
+      "class_first_class": "Normal",
+      "desc_first": "A man is standing near a Christmas tree and appears to be putting something on it. This could potentially be classified as vandalism due to the unusual action of placing items on a Christmas tree, which is typically not allowed or encouraged during holiday season decorations.\n\nNormal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Vandalism036_x264",
+      "start": 18.2,
+      "end": 25.2,
+      "gt": "Then the shirtless man pushed all the shelves to the ground while walking towards the store.",
+      "gt_class": "Vandalism",
+      "class_first": "Shoplifting.",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The security camera footage shows a person standing behind a counter in what appears to be a convenience store or gas station. The individual is not wearing any clothing and seems to be looking towards the entrance of the establishment. Based on the context provided by the image, the most appropriate classification for this scene would be \"Shoplifting.\"\n\n[Classification: Shoplifting]",
+      "desc_first_class": "Shoplifting"
+    },
+    {
+      "video_id": "Fighting042_x264",
+      "start": 0.0,
+      "end": 8.2,
+      "gt": "Security patrolling the door",
+      "gt_class": "Normal",
+      "class_first": "Robbery.",
+      "class_first_class": "Robbery",
+      "desc_first": "A man wearing a black uniform is exiting through an open door of a building. The timestamp on the footage reads 11/04/23 at 1:47:32 PM. Based on the image alone, I cannot definitively determine the exact nature of the activity or whether it constitutes a crime such as robbery, assault, or burglary. However, given the context and appearance of the individual, it could potentially be classified under \"Robbery\" or \"Burglary.\"\n\nClassification: Robbery/Burglary",
+      "desc_first_class": "Burglary"
+    },
+    {
+      "video_id": "Explosion029_x264",
+      "start": 37.4,
+      "end": 45.8,
+      "gt": "The yellow-haired woman walked to the side of the black car and put the oil gun into the car's fuel port.",
+      "gt_class": "Normal",
+      "class_first": "Robbery.",
+      "class_first_class": "Robbery",
+      "desc_first": "The woman is pumping gas into her car while standing next to a fuel pump. She appears focused on the task at hand and there are no signs of aggression or violence.\n\nNormal",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Arson035_x264",
+      "start": 18.0,
+      "end": 24.4,
+      "gt": "The man set the car on fire and caught fire himself.",
+      "gt_class": "Arson",
+      "class_first": "Arbusto",
+      "class_first_class": "Unknown",
+      "desc_first": "The surveillance footage shows a person walking towards a white van parked on a narrow street lined with houses and windows. The individual appears to be approaching or interacting with the vehicle.\n\nNormal\n\n[Normal]",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Explosion022_x264",
+      "start": 73.4,
+      "end": 81.2,
+      "gt": "The machine exploded, emitting a large amount of sparks and smoke.",
+      "gt_class": "Explosion",
+      "class_first": "Arsenal",
+      "class_first_class": "Unknown",
+      "desc_first": "The surveillance footage shows a person wearing an orange hard hat and blue jeans entering a room filled with electrical panels and switches. The individual appears to be working on or inspecting these components. This scenario does not match any of the listed categories such as abuse, assault, arson, theft, vandalism, explosion, fighting, road accidents, robbery, shooting, shoplifting, or stealing.\n\n[Arson]",
+      "desc_first_class": "Arson"
+    },
+    {
+      "video_id": "RoadAccidents125_x264",
+      "start": 15.7,
+      "end": 18.7,
+      "gt": "A black car collided with a straight black car while turning at a traffic light",
+      "gt_class": "RoadAccidents",
+      "class_first": "Road accidents.",
+      "class_first_class": "Unknown",
+      "desc_first": "The image shows a live traffic camera feed capturing an intersection where multiple vehicles are stopped due to construction work and roadwork barriers. There is visible smoke or dust being kicked up by some of the cars, indicating that there might have been an accident or incident involving one of the vehicles. The scene appears calm without any signs of active violence or aggressive behavior.\n\nClassification: RoadAccidents\n\n[RoadAccidents]",
+      "desc_first_class": "RoadAccidents"
+    },
+    {
+      "video_id": "Explosion013_x264",
+      "start": 84.7,
+      "end": 98.8,
+      "gt": "The oil tanker suddenly caught fire. The man in white fell out of the car with fire on his body and rolled on the ground.",
+      "gt_class": "Explosion",
+      "class_first": "Fighting.",
+      "class_first_class": "Fighting",
+      "desc_first": "The surveillance footage shows a person using a chainsaw to cut through metal pipes on a concrete floor. The scene is chaotic and destructive, indicating an act of vandalism or arson.\n\nArson",
+      "desc_first_class": "Arson"
+    },
+    {
+      "video_id": "Burglary076_x264",
+      "start": 303.5,
+      "end": 313.0,
+      "gt": "The man returned to the house again.",
+      "gt_class": "Burglary",
+      "class_first": "Arrest. The person is walking towards a car on the road.",
+      "class_first_class": "Arrest",
+      "desc_first": "A person is walking towards a parked car on a porch. This could be classified as normal traffic or pedestrian movement. Classified as Normal.\n[Normal]",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Explosion010_x264",
+      "start": 3.1,
+      "end": 48.1,
+      "gt": "An explosion occurred in the distance, accompanied by a large amount of smoke and fire.",
+      "gt_class": "Explosion",
+      "class_first": "Arsenal",
+      "class_first_class": "Unknown",
+      "desc_first": "The surveillance footage shows a large plume of black smoke rising into the sky above a forested area, indicating an ongoing fire or explosion. The scene is set during daylight hours and appears to be captured by security cameras positioned around the perimeter of the property.\n\nClassification: Fire/Explosion\n\nThis classification is based on the visible evidence of smoke emanating from the ground level towards the treetops, which strongly suggests that there has been some form of ignition involving flammable materials such as wood or vegetation. The location being within a residential area further supports the likelihood of arson rather than other crimes like theft or vandal",
+      "desc_first_class": "Explosion"
+    },
+    {
+      "video_id": "Robbery102_x264",
+      "start": 42.0,
+      "end": 44.2,
+      "gt": "The woman jumped up and attacked the man, then pushed the man into the grass",
+      "gt_class": "Robbery",
+      "class_first": "Fighting",
+      "class_first_class": "Fighting",
+      "desc_first": "The image shows two individuals engaged in a physical altercation on a driveway between a black car and another vehicle. The person closer to the camera appears to be reaching out towards the other individual who is standing near the second car. Based on the context provided by the timestamp and channel information (17:46:05 - 17:46:06), it seems that the scene captured is part of a security or monitoring system footage.\n\nClassification: Fighting\n\n[Fighting]",
+      "desc_first_class": "Fighting"
+    }
+  ]
+}

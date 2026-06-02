@@ -63,7 +63,7 @@ _OUTPUT_DIR   = os.environ.get("OUTPUT_DIR", str(_PIPELINE_ROOT / "output" / "sm
 _MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 
 MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.stelarea.com/")
-MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "vlm-surveillance")
 
 UCF_CLASSES = frozenset([
     "Normal", "Abuse", "Arrest", "Arson", "Assault", "Burglary",
@@ -195,11 +195,14 @@ class SurveillanceTrainer(Trainer):
         if self.vision_lr is None:
             return super().create_optimizer()
 
+        # SmolVLM2=vision_model, Qwen3-VL=visual, LFM2-VL=vision_tower
+        _VISION_KEYS = ("vision_model", "visual", "vision_tower")
         vision_params, other_params = [], []
         for n, p in self.model.named_parameters():
             if not p.requires_grad:
                 continue
-            (vision_params if "vision_model" in n else other_params).append(p)
+            is_vision = any(k in n for k in _VISION_KEYS)
+            (vision_params if is_vision else other_params).append(p)
 
         if not vision_params or not other_params:
             logging.getLogger("train_full").warning(
@@ -684,7 +687,7 @@ def _collate_fn_image_mode(batch: list[dict], processor, is_train: bool = True) 
 # LoRA setup
 # ---------------------------------------------------------------------------
 
-def apply_lora(model, rank: int, logger):
+def apply_lora(model, rank: int, logger, use_dora: bool = True):
     try:
         from peft import get_peft_model, LoraConfig, TaskType
     except ImportError:
@@ -707,14 +710,15 @@ def apply_lora(model, rank: int, logger):
             "w1", "w2", "w3", "in_proj", "linear_1", "linear_2",
         ],
         lora_dropout=0.05,
-        use_dora=True,
+        use_dora=use_dora,
         init_lora_weights="gaussian",
         bias="none",
     )
     model = get_peft_model(model, config)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total     = sum(p.numel() for p in model.parameters())
-    logger.info(f"LoRA rank={rank}  trainable={trainable/1e6:.1f}M / {total/1e6:.0f}M "
+    dora_str = "DoRA" if use_dora else "LoRA (no DoRA)"
+    logger.info(f"{dora_str} rank={rank}  trainable={trainable/1e6:.1f}M / {total/1e6:.0f}M "
                 f"({100*trainable/total:.1f}%)")
     return model
 
@@ -783,6 +787,10 @@ def main():
                              "Use with --eval-steps 10 to test eval OOM before full run.")
     parser.add_argument("--no-grad-checkpoint", action="store_true",
                         help="Disable gradient checkpointing. Only use on GPUs with extreme VRAM (>400 GB).")
+    parser.add_argument("--no-dora", action="store_true",
+                        help="Disable DoRA (use standard LoRA). Auto-disabled on MPS/CPU. Explicit flag for CUDA smoke tests.")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="Override MAX_FRAMES global. Default 48. Set 4-8 for MPS smoke tests to cut vision VRAM.")
     parser.add_argument("--force-cpu", action="store_true",
                         help="Force CPU training (disables MPS). Slow but avoids MPS OOM on local Mac.")
     parser.add_argument("--trust-remote-code", action="store_true",
@@ -794,6 +802,12 @@ def main():
     args = parser.parse_args()
     if args.no_lora:
         args.lora = False
+
+    if args.max_frames is not None:
+        global MAX_FRAMES
+        MAX_FRAMES = args.max_frames
+        # Do NOT update SEG_DURATION/SEG_STRIDE — those control sub-clip segmentation,
+        # not per-clip frame count. Reducing frames caps the vision encoder input only.
 
     if not torch.cuda.is_available():
         if args.force_cpu:
@@ -930,7 +944,8 @@ def main():
             model = model.to("cpu")
 
         if args.lora:
-            model = apply_lora(model, args.lora_rank, logger)
+            _dora = torch.cuda.is_available() and not args.no_dora
+            model = apply_lora(model, args.lora_rank, logger, use_dora=_dora)
             if torch.cuda.is_available() and not args.no_grad_checkpoint:
                 model.enable_input_require_grads()
                 model.gradient_checkpointing_enable(

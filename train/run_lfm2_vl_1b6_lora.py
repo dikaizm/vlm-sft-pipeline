@@ -1,0 +1,79 @@
+"""
+LoRA fine-tune: LiquidAI/LFM2-VL-1.6B on UCF-Crime + UCA dataset.
+All config hardcoded below. Run on CUDA GPU (>=12GB VRAM).
+
+Usage:
+    DATA_ROOT=/path/to/data python vlm-sft-pipeline/train/run_lfm2_vl_1b6_lora.py
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Hardcoded config
+# ---------------------------------------------------------------------------
+
+MODEL_ID      = "LiquidAI/LFM2-VL-1.6B"
+DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
+OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / "lfm2-vl-1b6-lora")
+
+MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
+MLFLOW_EXPERIMENT = "vlm-surveillance"
+
+LORA_RANK     = 16
+EPOCHS        = 3
+LR            = 1e-4
+VISION_LR     = 5e-5
+BATCH         = 4
+GRAD_ACCUM    = 4
+MAX_FRAMES    = 16
+MAX_NORMAL    = 1500
+SAMPLER       = "sqrt"
+CLASS_TOKEN_W = 5.0
+FRAME_JITTER  = 1.5
+EVAL_STEPS    = 100
+SAVE_STEPS    = 100
+
+# Must be set before train_full is imported (module-level constants read at import time)
+os.environ["MLFLOW_URI"]        = MLFLOW_URI
+os.environ["MLFLOW_EXPERIMENT"] = MLFLOW_EXPERIMENT
+
+# ---------------------------------------------------------------------------
+# Inject config as argv so train_full.main() picks it up
+# ---------------------------------------------------------------------------
+
+sys.argv = [
+    "train_full.py",
+    "--model",              MODEL_ID,
+    "--trust-remote-code",
+    "--lora",
+    "--lora-rank",          str(LORA_RANK),
+    "--max-train",          "-1",
+    "--max-val",            "-1",
+    "--epochs",             str(EPOCHS),
+    "--lr",                 str(LR),
+    "--vision-lr",          str(VISION_LR),
+    "--batch",              str(BATCH),
+    "--grad-accum",         str(GRAD_ACCUM),
+    "--max-frames",         str(MAX_FRAMES),
+    "--max-normal",         str(MAX_NORMAL),
+    "--sampler",            SAMPLER,
+    "--class-token-weight", str(CLASS_TOKEN_W),
+    "--frame-jitter",       str(FRAME_JITTER),
+    "--eval-during-training",
+    "--eval-steps",         str(EVAL_STEPS),
+    "--save-steps",         str(SAVE_STEPS),
+    "--data-root",          DATA_ROOT,
+    "--output",             OUTPUT_DIR,
+]
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).parent))
+from train_full import main
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,307 @@
+{
+  "model": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
+  "n_clips": 25,
+  "crime_ratio": 0.8,
+  "context_pad": 5.0,
+  "metrics": {
+    "class_first": {
+      "unknown_rate": 0.36,
+      "cls_accuracy": 0.12,
+      "f1_macro": 0.0595,
+      "f1_weighted": 0.0867,
+      "binary_accuracy": 0.24,
+      "binary_f1": 0.3448,
+      "binary_precision": 0.5556,
+      "binary_recall": 0.25,
+      "rougeL": 0.1043
+    },
+    "desc_first": {
+      "unknown_rate": 0.64,
+      "cls_accuracy": 0.04,
+      "f1_macro": 0.0286,
+      "f1_weighted": 0.048,
+      "binary_accuracy": 0.28,
+      "binary_f1": 0.3077,
+      "binary_precision": 0.6667,
+      "binary_recall": 0.2,
+      "rougeL": 0.1573
+    }
+  },
+  "clips": [
+    {
+      "video_id": "Robbery102_x264",
+      "start": 42.0,
+      "end": 44.2,
+      "gt": "The woman jumped up and attacked the man, then pushed the man into the grass",
+      "gt_class": "Robbery",
+      "class_first": "The activity is Abused.",
+      "class_first_class": "Unknown",
+      "desc_first": "The activity is fighting and classified as Fight.",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 250.3,
+      "end": 252.6,
+      "gt": "The burning Christmas tree fell to the ground",
+      "gt_class": "Arson",
+      "class_first": "The activity is not clear in these images and cannot be determined based on what's shown.",
+      "class_first_class": "Unknown",
+      "desc_first": "The activity is not clear due to low lighting and possible smoke or fog; however, there appears to be no signs of abuse, arsons, assaults, burglaries, explosions, road accidents, robberies, shootings, shoplifting, stealing, vandalism, nor any other criminal activities taking place within these images. Therefore, based on what can be seen clearly without excessive detail, I would categorize this as \"Normal\".",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 252.9,
+      "end": 287.6,
+      "gt": "The Christmas tree continues to burn, and thicker smoke comes out",
+      "gt_class": "Arson",
+      "class_first": "The activity is not clear due to low visibility and lack of details in the images.",
+      "class_first_class": "Unknown",
+      "desc_first": "The activity is Smoke/Fog and classified as Smoke/Fog.",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Explosion029_x264",
+      "start": 61.5,
+      "end": 68.1,
+      "gt": "The yellow-haired woman touched the oil gun, and the oil gun suddenly exploded and caught fire.",
+      "gt_class": "Explosion",
+      "class_first": "The activity is Abuse.",
+      "class_first_class": "Abuse",
+      "desc_first": "The person is putting gas into their car while another child stands nearby watching them. This falls under the category of \"Shopping\" as they're purchasing fuel for transportation purposes. So the answer would be Shopping and Class Name: Shopping.",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "RoadAccidents121_x264",
+      "start": 13.5,
+      "end": 17.3,
+      "gt": "The white car reversed and a group of people on the road held the car and held down the driver.",
+      "gt_class": "RoadAccidents",
+      "class_first": "The activity is Road Accident.",
+      "class_first_class": "Unknown",
+      "desc_first": "The activity is an accident where a car has flipped over and people have gathered around to help those inside get out safely. So the classification would be \"Road Accident\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Shoplifting034_x264",
+      "start": 186.9,
+      "end": 192.2,
+      "gt": "The man put the white standing object on the counter into his pants",
+      "gt_class": "Shoplifting",
+      "class_first": "The activity is Shoplifting.",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The man is walking through an aisle and looking around while holding something in his hand. He seems to be searching for someone or checking out items on display. So the classification would be \"Shopping\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Explosion025_x264",
+      "start": 0.0,
+      "end": 14.6,
+      "gt": "An explosion occurred in the distance, and a large amount of thick smoke floated away after a burst of fire.",
+      "gt_class": "Explosion",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The activity is arson; Class Name: Arson.",
+      "desc_first_class": "Arson"
+    },
+    {
+      "video_id": "RoadAccidents131_x264",
+      "start": 1.2,
+      "end": 16.7,
+      "gt": "At the intersection, a black car going straight collided with a black car going straight on the other road.",
+      "gt_class": "RoadAccidents",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The activity is crossing street and walking on sidewalk while being watched by traffic lights. So the classification would be \"Crossing Street\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Vandalism036_x264",
+      "start": 21.2,
+      "end": 25.2,
+      "gt": "A person came from inside the counter",
+      "gt_class": "Normal",
+      "class_first": "The activity is Shoplifting.",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The man is throwing something on top of another person's head while they're standing behind him and he has his hands around their neck. So the classification would be \"Abuse\".",
+      "desc_first_class": "Abuse"
+    },
+    {
+      "video_id": "Explosion011_x264",
+      "start": 27.6,
+      "end": 33.8,
+      "gt": "The white thing emits a lot of white smoke after hitting the bus.",
+      "gt_class": "Normal",
+      "class_first": "The activity is \"Explosion\".",
+      "class_first_class": "Explosion",
+      "desc_first": "The activity is an explosion and fire on the street. So the classification would be \"Explosion\".",
+      "desc_first_class": "Explosion"
+    },
+    {
+      "video_id": "Explosion029_x264",
+      "start": 14.4,
+      "end": 19.5,
+      "gt": "The yellow-haired woman walked to the black car and unscrewed the gas nozzle on the car",
+      "gt_class": "Normal",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The woman is pumping gas into her car while standing next to another vehicle and talking on her cell phone. So the classification would be \"Pumping Gas\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Stealing079_x264",
+      "start": 143.6,
+      "end": 147.2,
+      "gt": "A man in white rushed towards the man in striped shirt with a shovel, and the man in striped shirt ran away.",
+      "gt_class": "Normal",
+      "class_first": "The activity is \"Abuse\".",
+      "class_first_class": "Abuse",
+      "desc_first": "The man is opening and closing his gate while riding on a motorcycle behind him. So the classification would be \"Opening/Closing Gate\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Shoplifting034_x264",
+      "start": 221.7,
+      "end": 223.7,
+      "gt": "The man took something from the counter and put it in his pocket",
+      "gt_class": "Shoplifting",
+      "class_first": "The activity is Shoplifting.",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The man is applying makeup to another woman while she stands behind him; they appear engaged and focused on their task together. So the answer would be \"Shopping\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Explosion008_x264",
+      "start": 34.1,
+      "end": 58.3,
+      "gt": "A car exploded, a large amount of dust and smoke spread, and the screen shook and flickered.",
+      "gt_class": "Explosion",
+      "class_first": "The activity is an explosion.",
+      "class_first_class": "Unknown",
+      "desc_first": "The activity is an explosion and fire on the road; Class Name: Explosion.",
+      "desc_first_class": "Explosion"
+    },
+    {
+      "video_id": "Fighting042_x264",
+      "start": 0.0,
+      "end": 8.2,
+      "gt": "Security patrolling the door",
+      "gt_class": "Normal",
+      "class_first": "The activity is \"Abuse\".",
+      "class_first_class": "Abuse",
+      "desc_first": "The man is walking into an office building through its glass doors while carrying some items on his back and wearing dark clothing; he appears to be entering for work or visiting purposes. So the classification would be \"Work\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Burglary079_x264",
+      "start": 256.1,
+      "end": 350.4,
+      "gt": "A total of five people gathered around the door and cooperated to pry it open.",
+      "gt_class": "Burglary",
+      "class_first": "Thefts",
+      "class_first_class": "Unknown",
+      "desc_first": "The group is attempting to break into or steal something from an establishment by using force and tools like hammers. So the classification would be \"Stealing\".",
+      "desc_first_class": "Stealing"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 37.5,
+      "end": 49.9,
+      "gt": "The man took out a lighter and tried to light the Christmas tree but it did not light up.",
+      "gt_class": "Arson",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The man is putting up decorations on Christmas trees and taking down ornaments after decorating them for Christmas. So the classification would be \"Decorating\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Burglary076_x264",
+      "start": 125.9,
+      "end": 147.0,
+      "gt": "The man finally pried open the door and entered the house.",
+      "gt_class": "Burglary",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The classification is Normal.",
+      "desc_first_class": "Normal"
+    },
+    {
+      "video_id": "RoadAccidents121_x264",
+      "start": 7.3,
+      "end": 13.5,
+      "gt": "A black car was hit by a white car while passing through the alley, and a woman was also knocked to the ground.",
+      "gt_class": "RoadAccidents",
+      "class_first": "The activity is \"Road Accident\".",
+      "class_first_class": "Unknown",
+      "desc_first": "The activity is an accident where a car has crashed into a gate and people have been injured; Class: Accident.",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Burglary079_x264",
+      "start": 120.4,
+      "end": 132.8,
+      "gt": "The man squatted behind the trunk to hide.",
+      "gt_class": "Burglary",
+      "class_first": "Thefts",
+      "class_first_class": "Unknown",
+      "desc_first": "The person is stealing an object off the ground near a car parked under a bridge. Class: Theft",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Fighting042_x264",
+      "start": 8.1,
+      "end": 25.4,
+      "gt": "A man wearing a hat approaches and fights with the security guard",
+      "gt_class": "Fighting",
+      "class_first": "The activity is \"Shoplifting\".",
+      "class_first_class": "Shoplifting",
+      "desc_first": "The man is stealing food and money from an open door while someone else stands nearby watching him. So the classification would be \"Stealing\".",
+      "desc_first_class": "Stealing"
+    },
+    {
+      "video_id": "Shooting046_x264",
+      "start": 158.6,
+      "end": 168.2,
+      "gt": "The man next to him took out his gun and shot around",
+      "gt_class": "Shooting",
+      "class_first": "The activity is \"Abuse\".",
+      "class_first_class": "Abuse",
+      "desc_first": "The man is walking into an establishment and grabbing something off the counter while another person stands nearby watching him. So the classification would be \"Shopping\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Burglary079_x264",
+      "start": 181.2,
+      "end": 193.1,
+      "gt": "The man ducked and ducked.",
+      "gt_class": "Burglary",
+      "class_first": "Thefts",
+      "class_first_class": "Unknown",
+      "desc_first": "The person is walking on the sidewalk next to parked cars and appears to be looking for something or someone as they walk by them. So the answer would be \"Shopping\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 81.3,
+      "end": 106.0,
+      "gt": "The man walked down and tried to light a piece of paper but failed to light it.",
+      "gt_class": "Arson",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The person is putting something on top of an object near some shelves and doors while wearing black clothes. So the classification would be \"Putting Something On Top Of Object Near Shelves And Doors\".",
+      "desc_first_class": "Unknown"
+    },
+    {
+      "video_id": "Arson022_x264",
+      "start": 115.8,
+      "end": 121.2,
+      "gt": "The man returned to the Christmas tree and continued to light the Christmas tree and successfully lit it.",
+      "gt_class": "Arson",
+      "class_first": "The activity is \"Normal\".",
+      "class_first_class": "Normal",
+      "desc_first": "The man is opening and closing an automatic door while standing next to a Christmas tree decorated for holiday season. So the classification would be \"Normal\".",
+      "desc_first_class": "Normal"
+    }
+  ]
+}
