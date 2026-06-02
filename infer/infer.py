@@ -175,7 +175,6 @@ MLFLOW_URI        = os.environ.get("MLFLOW_URI",        "https://mlflow-geoai.st
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "smolvlm2-surveillance-sft")
 
 NUM_FRAMES     = 4
-SEED           = 99   # different from training seed
 MAX_NEW_TOKENS = 128
 
 UCF_CLASSES = frozenset([
@@ -232,7 +231,7 @@ def _load_anomaly_test_ids() -> set[str]:
     return ids
 
 
-def load_test_samples(n: int) -> list[dict]:
+def load_test_samples(n: int, crime_ratio: float = 0.5) -> list[dict]:
     with open(TEST_JSON) as f:
         data = json.load(f)
 
@@ -269,9 +268,18 @@ def load_test_samples(n: int) -> list[dict]:
     if skipped_leakage:
         print(f"  Filtered {skipped_leakage} videos present in training split (leakage prevention)")
 
-    random.seed(SEED)
-    random.shuffle(items)
-    return items[:n]
+    crime_items  = [x for x in items if x["gt_class"] != "Normal" and x["gt_class"] != "Unknown"]
+    normal_items = [x for x in items if x["gt_class"] == "Normal"]
+
+    random.shuffle(crime_items)
+    random.shuffle(normal_items)
+
+    n_crime  = min(int(n * crime_ratio), len(crime_items))
+    n_normal = min(n - n_crime, len(normal_items))
+    selected = crime_items[:n_crime] + normal_items[:n_normal]
+    print(f"  Sampled {n_crime} crime + {n_normal} normal clips (crime_ratio={crime_ratio})")
+    random.shuffle(selected)
+    return selected
 
 
 def extract_frames(video_path: str, start: float, end: float, n_frames: int) -> list:
@@ -372,6 +380,7 @@ def run_inference(model, processor, device, frames: list, start: float, end: flo
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n",           type=int, default=5,            help="Number of test clips")
+    parser.add_argument("--crime-ratio", type=float, default=0.5,        help="Fraction of clips from crime classes (default: 0.5)")
     parser.add_argument("--finetuned",   default=FINETUNED_DIR,          help="Fine-tuned model dir")
     parser.add_argument("--no-zeroshot", action="store_true",            help="Skip zero-shot model")
     parser.add_argument("--output",      default=None,                   help="Path to save JSON results (default: OUTPUT_DIR/results/<run>.json)")
@@ -462,7 +471,7 @@ def main():
 
     # --- Load test samples ---
     print(f"\nLoading {args.n} test samples ...")
-    samples = load_test_samples(args.n)
+    samples = load_test_samples(args.n, crime_ratio=args.crime_ratio)
     if not samples:
         sys.exit("No test samples found — check TEST_JSON path and VIDEO_ROOT.")
     print(f"  Loaded {len(samples)} samples\n")

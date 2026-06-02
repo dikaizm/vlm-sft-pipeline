@@ -664,8 +664,9 @@ def main():
                         help="Per-token loss multiplier for [ClassName] bracket tokens (default: 5.0). "
                              "Set to 1.0 to disable.")
     parser.add_argument("--eval-steps", type=int, default=None,
-                        help="Override eval/save interval (steps). Default: max(50, steps_per_epoch//5). "
-                             "Use a small value (e.g. 5) for local smoke tests.")
+                        help="Override eval interval (steps). Default: min(steps_per_epoch, 100).")
+    parser.add_argument("--save-steps", type=int, default=None,
+                        help="Override checkpoint save interval (steps). Default: same as eval-steps.")
     parser.add_argument("--sampler", choices=["raw", "sqrt", "balanced"], default="sqrt",
                         help="Class-aware sampler mode. raw=natural distribution (~90%% Normal), "
                              "sqrt=weight 1/sqrt(count) (Normal ~46%%, minority ~4%% each — recommended for 500M), "
@@ -864,7 +865,7 @@ def main():
         # Eval every ~20% of training steps, save best checkpoint
         steps_per_epoch = max(1, len(train_ds) // (args.batch * args.grad_accum))
         eval_steps = args.eval_steps if args.eval_steps else min(steps_per_epoch, 100)
-        save_steps = eval_steps
+        save_steps = args.save_steps if args.save_steps else 50
 
         logger.info(f"Steps/epoch: {steps_per_epoch}  Save every: {save_steps} steps  Eval: {'every ' + str(eval_steps) + ' steps' if args.eval_during_training else 'disabled'}")
         try:
