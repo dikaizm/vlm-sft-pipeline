@@ -808,6 +808,11 @@ def main():
     parser.add_argument("--class-token-weight", type=float, default=5.0,
                         help="Per-token loss multiplier for [ClassName] bracket tokens (default: 5.0). "
                              "Set to 1.0 to disable.")
+    parser.add_argument("--attn-impl", choices=["auto", "flash_attention_2", "sdpa", "eager"],
+                        default="auto",
+                        help="Attention backend. 'auto' = flash_attention_2 if installed else "
+                             "sdpa/eager. Use 'sdpa' for models whose vision tower lacks FA2 "
+                             "support (e.g. LFM2-VL / Siglip2VisionModel).")
     parser.add_argument("--kl-coef", type=float, default=0.0,
                         help="KL-to-base retention coefficient (LoRA only). >0 adds "
                              "beta*KL(base||student) on response tokens, anchoring the "
@@ -965,13 +970,18 @@ def main():
         logger.info("Loading model and processor...")
         processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
 
-        # flash_attention_2 > sdpa > eager (fallback chain)
-        try:
-            import flash_attn  # noqa: F401
-            attn_impl = "flash_attention_2"
-        except ImportError as e:
-            attn_impl = "sdpa" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "eager"
-            logger.warning(f"flash-attn not available ({e}), falling back to {attn_impl}")
+        # Attention impl: explicit override, else flash_attention_2 > sdpa > eager.
+        # Some vision towers (e.g. LFM2-VL's Siglip2VisionModel) lack FA2 support —
+        # use --attn-impl sdpa for those.
+        if args.attn_impl != "auto":
+            attn_impl = args.attn_impl
+        else:
+            try:
+                import flash_attn  # noqa: F401
+                attn_impl = "flash_attention_2"
+            except ImportError as e:
+                attn_impl = "sdpa" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "eager"
+                logger.warning(f"flash-attn not available ({e}), falling back to {attn_impl}")
         logger.info(f"Attention impl: {attn_impl}")
         try:
             mlflow.log_param("attn_impl", attn_impl)

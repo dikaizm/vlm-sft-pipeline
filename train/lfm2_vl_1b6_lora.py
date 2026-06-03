@@ -52,6 +52,7 @@ sys.argv = [
     "train_full.py",
     "--model",              MODEL_ID,
     "--trust-remote-code",
+    "--attn-impl",          "sdpa",   # LFM2-VL SigLIP2 vision tower lacks FA2 support
     "--lora",
     "--lora-rank",          str(LORA_RANK),
     "--max-train",          "-1",
