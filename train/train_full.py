@@ -305,16 +305,22 @@ class SurveillanceTrainer(Trainer):
         # classes the data can't relearn (e.g. Explosion: ~4 train clips). Computed on
         # response tokens only (labels != -100) to bound the [N, V] softmax memory.
         if self.kl_coef > 0:
-            resp = (shift_labels.view(-1) != -100)        # [B*(T-1)]
-            if resp.any():
-                V = shift_logits.size(-1)
-                student_resp = shift_logits.view(-1, V)[resp].float()   # [N, V]
+            resp2d = (shift_labels != -100)               # [B, T-1]
+            if resp2d.any():
+                # Gather only the ~50 response positions per sample (advanced
+                # indexing — no full [B,T-1,V] copy). shift position j aligns to
+                # base_logits[:, j, :] (both predict token j+1).
+                b_idx, t_idx = resp2d.nonzero(as_tuple=True)
+                student_resp = shift_logits[b_idx, t_idx, :].float()    # [N, V]
                 del shift_logits
                 peft_model = self._unwrap_for_adapter(model)
+                # Drop labels so the base model skips its own CE loss (would
+                # allocate a second fp32 [B,T,V] buffer and OOM).
+                base_inputs = {k: v for k, v in inputs.items() if k != "labels"}
                 with torch.no_grad():
                     with peft_model.disable_adapter():
-                        base_logits = model(**inputs).logits
-                    base_resp = base_logits[..., :-1, :].contiguous().view(-1, V)[resp].float()
+                        base_logits = model(**base_inputs).logits        # [B, T, V]
+                    base_resp = base_logits[b_idx, t_idx, :].float()     # [N, V]
                     del base_logits
                 kl = nn.functional.kl_div(
                     student_resp.log_softmax(-1),

@@ -26,8 +26,8 @@ LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base 
 EPOCHS        = 3
 LR            = 1e-4
 VISION_LR     = 5e-5
-BATCH         = 16   # 4→16: fills VRAM, reduces wall time
-GRAD_ACCUM    = 2    # effective batch = 32
+BATCH         = 8    # KL adds a 2nd forward; halved from 16 for headroom (eff batch still 32)
+GRAD_ACCUM    = 4    # eff batch = 8 x 4 = 32
 MAX_FRAMES    = 32   # 16→32: better temporal coverage per clip
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
