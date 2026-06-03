@@ -32,6 +32,7 @@ MAX_FRAMES    = 32   # 16→32: better temporal coverage per clip
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
 CLASS_TOKEN_W = 5.0
+KL_COEF       = 0.0  # >0 enables KL-to-base retention (try 0.5-1.0 to fight rare-class forgetting)
 FRAME_JITTER  = 1.5
 EVAL_STEPS    = 50
 SAVE_STEPS    = 50
@@ -61,6 +62,7 @@ sys.argv = [
     "--max-normal",         str(MAX_NORMAL),
     "--sampler",            SAMPLER,
     "--class-token-weight", str(CLASS_TOKEN_W),
+    "--kl-coef",            str(KL_COEF),
     "--frame-jitter",       str(FRAME_JITTER),
     "--save-steps",         str(SAVE_STEPS),
     "--data-root",          DATA_ROOT,

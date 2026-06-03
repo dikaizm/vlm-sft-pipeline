@@ -187,6 +187,7 @@ class SurveillanceTrainer(Trainer):
 
     sampler_mode: str = "sqrt"   # set from CLI via SurveillanceTrainer.sampler_mode
     vision_lr: float | None = None  # if set, vision LoRA params use this LR (else inherit args.learning_rate)
+    kl_coef: float = 0.0         # >0 enables KL-to-base retention (LoRA only); set from CLI
 
     def create_optimizer(self):
         """Split LoRA params into vision vs LLM groups for differential LR."""
@@ -268,36 +269,67 @@ class SurveillanceTrainer(Trainer):
         # reduction="none" path materializes [B, T, V] tensor — OOMs on large eval batches.
         if token_weight is None or not model.training:
             loss = outputs.loss
-        else:
-            logits = outputs.logits          # [B, T, V]
-            labels = inputs["labels"]        # [B, T]
+            return (loss, outputs) if return_outputs else loss
 
-            # Causal LM shift: predict token t+1 from logits at t
-            shift_logits = logits[..., :-1, :].contiguous()   # [B, T-1, V]
-            shift_labels = labels[..., 1:].contiguous()       # [B, T-1]
-            # Free original logits immediately — CE upcast to fp32 would otherwise
-            # hold both bf16 [B,T,V] and fp32 [B,T,V] simultaneously → OOM
-            del logits
-            outputs.logits = None
+        logits = outputs.logits          # [B, T, V]
+        labels = inputs["labels"]        # [B, T]
 
-            loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
-            per_token = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-            ).view(shift_logits.size(0), -1)                  # [B, T-1]
+        # Causal LM shift: predict token t+1 from logits at t
+        shift_logits = logits[..., :-1, :].contiguous()   # [B, T-1, V]
+        shift_labels = labels[..., 1:].contiguous()       # [B, T-1]
+        # Free original logits immediately — CE upcast to fp32 would otherwise
+        # hold both bf16 [B,T,V] and fp32 [B,T,V] simultaneously → OOM
+        del logits
+        outputs.logits = None
 
-            mask = (shift_labels != -100).float()
+        loss_fct = nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+        per_token = loss_fct(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        ).view(shift_logits.size(0), -1)                  # [B, T-1]
 
-            # Per-token weight: class bracket tokens get CLASS_TOKEN_WEIGHT, others 1.0
-            shift_tw = token_weight[..., 1:].to(per_token.device)
-            mask = mask * shift_tw
+        mask = (shift_labels != -100).float()
 
-            denom = mask.sum(-1).clamp(min=1)
-            per_sample = (per_token * mask).sum(-1) / denom   # [B]
+        # Per-token weight: class bracket tokens get CLASS_TOKEN_WEIGHT, others 1.0
+        shift_tw = token_weight[..., 1:].to(per_token.device)
+        mask = mask * shift_tw
 
-            loss = per_sample.mean()
+        denom = mask.sum(-1).clamp(min=1)
+        per_sample = (per_token * mask).sum(-1) / denom   # [B]
+
+        loss = per_sample.mean()
+
+        # --- KL-to-base retention (catastrophic-forgetting guard) ---
+        # Keep the fine-tuned response distribution close to the FROZEN base model's
+        # (adapters disabled) on the same inputs. Preserves pretrained knowledge for
+        # classes the data can't relearn (e.g. Explosion: ~4 train clips). Computed on
+        # response tokens only (labels != -100) to bound the [N, V] softmax memory.
+        if self.kl_coef > 0:
+            resp = (shift_labels.view(-1) != -100)        # [B*(T-1)]
+            if resp.any():
+                V = shift_logits.size(-1)
+                student_resp = shift_logits.view(-1, V)[resp].float()   # [N, V]
+                del shift_logits
+                peft_model = self._unwrap_for_adapter(model)
+                with torch.no_grad():
+                    with peft_model.disable_adapter():
+                        base_logits = model(**inputs).logits
+                    base_resp = base_logits[..., :-1, :].contiguous().view(-1, V)[resp].float()
+                    del base_logits
+                kl = nn.functional.kl_div(
+                    student_resp.log_softmax(-1),
+                    base_resp.softmax(-1),
+                    reduction="batchmean",
+                )
+                loss = loss + self.kl_coef * kl
 
         return (loss, outputs) if return_outputs else loss
+
+    def _unwrap_for_adapter(self, model):
+        """Return the PeftModel that exposes disable_adapter(), unwrapping accelerate."""
+        if hasattr(self, "accelerator") and self.accelerator is not None:
+            model = self.accelerator.unwrap_model(model)
+        return model
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +802,12 @@ def main():
     parser.add_argument("--class-token-weight", type=float, default=5.0,
                         help="Per-token loss multiplier for [ClassName] bracket tokens (default: 5.0). "
                              "Set to 1.0 to disable.")
+    parser.add_argument("--kl-coef", type=float, default=0.0,
+                        help="KL-to-base retention coefficient (LoRA only). >0 adds "
+                             "beta*KL(base||student) on response tokens, anchoring the "
+                             "fine-tuned distribution to the frozen base to preserve "
+                             "pretrained knowledge for data-starved classes. "
+                             "Try 0.5-1.0; 0 = off. Adds one no-grad base forward per step.")
     parser.add_argument("--eval-steps", type=int, default=None,
                         help="Override eval interval (steps). Default: min(steps_per_epoch, 100).")
     parser.add_argument("--save-steps", type=int, default=None,
@@ -1047,6 +1085,13 @@ def main():
         )
         trainer.sampler_mode = args.sampler
         trainer.vision_lr = args.vision_lr
+        if args.kl_coef > 0 and not args.lora:
+            logger.warning("--kl-coef requires LoRA (needs disable_adapter); ignoring for full fine-tune.")
+            trainer.kl_coef = 0.0
+        else:
+            trainer.kl_coef = args.kl_coef
+        if trainer.kl_coef > 0:
+            logger.info(f"KL-to-base retention: beta={trainer.kl_coef} (anchors to frozen base)")
 
         # --- Train ---
         resume = args.resume or True  # True = auto-detect last checkpoint in output_dir
