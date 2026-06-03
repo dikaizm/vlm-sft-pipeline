@@ -22,7 +22,7 @@ MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
 MLFLOW_EXPERIMENT = "vlm-surveillance"
 
 # 96GB VRAM — big batch, more frames, higher LoRA rank, no grad checkpointing
-LORA_RANK     = 32   # 16→32: more capacity, VRAM is not a constraint
+LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base (alpha=2r=32)
 EPOCHS        = 3
 LR            = 1e-4
 VISION_LR     = 5e-5
@@ -32,7 +32,7 @@ MAX_FRAMES    = 32   # 16→32: better temporal coverage per clip
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
 CLASS_TOKEN_W = 5.0
-KL_COEF       = 0.0  # >0 enables KL-to-base retention (try 0.5-1.0 to fight rare-class forgetting)
+KL_COEF       = 0.5  # KL-to-base retention: anchors to frozen base, preserves rare-class knowledge
 FRAME_JITTER  = 1.5
 EVAL_STEPS    = 50
 SAVE_STEPS    = 50
@@ -60,6 +60,7 @@ sys.argv = [
     "--grad-accum",         str(GRAD_ACCUM),
     "--max-frames",         str(MAX_FRAMES),
     "--max-normal",         str(MAX_NORMAL),
+    "--fold-val",
     "--sampler",            SAMPLER,
     "--class-token-weight", str(CLASS_TOKEN_W),
     "--kl-coef",            str(KL_COEF),

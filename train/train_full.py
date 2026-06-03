@@ -815,6 +815,10 @@ def main():
     parser.add_argument("--max-normal", type=int, default=1500,
                         help="Cap Normal class samples (undersample). -1 = no cap. "
                              "Default 1500 flips data to crime-majority for class-first prior fix.")
+    parser.add_argument("--fold-val", action="store_true",
+                        help="Fold the validation split into training (union, then Normal cap). "
+                             "Boosts data-starved classes (e.g. Explosion 4->36). Use when eval "
+                             "is disabled; test split stays the untouched benchmark.")
     parser.add_argument("--sampler", choices=["raw", "sqrt", "balanced"], default="sqrt",
                         help="Class-aware sampler mode. raw=natural distribution (~90%% Normal), "
                              "sqrt=weight 1/sqrt(count) (Normal ~46%%, minority ~4%% each — recommended for 500M), "
@@ -1021,7 +1025,31 @@ def main():
 
         # --- Dataset ---
         logger.info("Building datasets...")
-        train_ds = build_dataset(train_json, video_root, args.max_train, logger, max_normal=args.max_normal)
+        if args.fold_val:
+            # Fold validation split into training to boost data-starved classes
+            # (e.g. Explosion: ~4 train clips + ~32 val clips). Eval is disabled
+            # in this regime; the test split remains the untouched benchmark.
+            logger.info("Folding val split into train (rare-class signal boost)")
+            tr = _load_samples(train_json, video_root, -1, max_normal=-1)
+            vl = _load_samples(val_json,   video_root, -1, max_normal=-1)
+            merged = tr + vl
+            if args.max_normal > 0:
+                normal = [x for x in merged if x.get("class") == "Normal"]
+                other  = [x for x in merged if x.get("class") != "Normal"]
+                random.seed(SEED); random.shuffle(normal)
+                merged = other + normal[:args.max_normal]
+                random.shuffle(merged)
+                logger.info(f"  Union Normal capped to {min(len(normal), args.max_normal)}")
+            if args.max_train != -1:
+                merged = merged[:args.max_train]
+            train_ds = Dataset.from_list(merged)
+            from collections import Counter as _C
+            cc = _C(x.get("class", "Normal") for x in merged)
+            logger.info(f"  Folded train+val: {len(train_ds)} samples; "
+                        f"Explosion={cc.get('Explosion',0)} Arson={cc.get('Arson',0)} "
+                        f"Shooting={cc.get('Shooting',0)} Normal={cc.get('Normal',0)}")
+        else:
+            train_ds = build_dataset(train_json, video_root, args.max_train, logger, max_normal=args.max_normal)
         val_ds   = build_dataset(val_json,   video_root, args.max_val,   logger)
 
         # Eval every ~20% of training steps, save best checkpoint
