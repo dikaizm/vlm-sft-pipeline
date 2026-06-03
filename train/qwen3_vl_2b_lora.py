@@ -9,6 +9,7 @@ Usage:
 import sys
 import os
 from pathlib import Path
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Hardcoded config
@@ -16,7 +17,8 @@ from pathlib import Path
 
 MODEL_ID      = "Qwen/Qwen3-VL-2B-Instruct"
 DATA_ROOT     = os.environ.get("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
-OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / "qwen3-vl-2b-lora")
+RUN_TAG       = datetime.now().strftime("%Y%m%d-%H%M%S")
+OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / f"qwen3-vl-2b-lora-{RUN_TAG}")
 
 MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
 MLFLOW_EXPERIMENT = "vlm-surveillance"
