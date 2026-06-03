@@ -339,32 +339,50 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
     )
 
 
+def _is_image_mode_processor(processor) -> bool:
+    """Processors that expect frames as individual images (e.g. LFM2-VL)."""
+    return type(processor).__name__ == "Lfm2VlProcessor"
+
+
 def run_inference(model, processor, device, frames: list, start: float, end: float, prompt: str,
                   do_sample: bool = False, temperature: float = 0.8,
                   top_p: float = 0.9, repetition_penalty: float = 1.0,
                   constrained: bool = False) -> str:
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "video"},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
-    text = processor.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False
-    )
-    metadata = _make_video_metadata(start, end, len(frames))
-    inputs = processor(
-        text=[text],
-        videos=[[frames]],
-        video_metadata=[metadata],
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=1024,
-    ).to(device)
+    if _is_image_mode_processor(processor):
+        # LFM2-VL: frames as individual images, not a video tensor.
+        content = [{"type": "image"} for _ in frames]
+        content.append({"type": "text", "text": prompt})
+        messages = [{"role": "user", "content": content}]
+        text = processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+        inputs = processor(
+            images=frames, text=text, return_tensors="pt",
+            truncation=True, max_length=1024,
+        ).to(device)
+    else:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video"},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        text = processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+        metadata = _make_video_metadata(start, end, len(frames))
+        inputs = processor(
+            text=[text],
+            videos=[[frames]],
+            video_metadata=[metadata],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=1024,
+        ).to(device)
 
     gen_kwargs: dict = {"max_new_tokens": MAX_NEW_TOKENS}
     if do_sample:
