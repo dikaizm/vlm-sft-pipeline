@@ -75,7 +75,7 @@ def _build_class_logits_processor(processor, prompt_length: int):
 
 
 def _compute_caption_metrics(predictions: list[str], references: list[str]) -> dict:
-    """Compute BLEU-4, ROUGE-L, and BERTScore (F1) for a list of predictions."""
+    """Compute ROUGE-L, BLEU-4, CIDEr, and BERTScore (F1) for a list of predictions."""
     metrics = {}
 
     # ROUGE-L
@@ -98,6 +98,18 @@ def _compute_caption_metrics(predictions: list[str], references: list[str]) -> d
                                              smoothing_function=smoothie), 4)
     except ImportError:
         print("[WARN] nltk not installed — skipping BLEU-4. pip install nltk")
+
+    # CIDEr (corpus-level, TF-IDF weighted n-gram consensus; Vedantam et al. CVPR'15)
+    try:
+        from pycocoevalcap.cider.cider import Cider
+        gts = {i: [ref.lower().strip()]  for i, ref  in enumerate(references)}
+        res = {i: [pred.lower().strip()] for i, pred in enumerate(predictions)}
+        score, _ = Cider().compute_score(gts, res)
+        metrics["cider"] = round(float(score), 4)
+    except ImportError:
+        print("[WARN] pycocoevalcap not installed — skipping CIDEr. pip install pycocoevalcap")
+    except Exception as e:
+        print(f"[WARN] CIDEr computation failed: {e}")
 
     # BERTScore (optional — skipped if not installed)
     try:
@@ -533,7 +545,7 @@ def main():
         ft_metrics = _compute_caption_metrics(ft_preds, gts)
         ft_metrics.update(_compute_cls_metrics([r["finetuned_class"] for r in clip_results], gt_classes))
         print("  Fine-tuned  :")
-        print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("bleu4", "rougeL", "bertscore_f1")))
+        print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("rougeL", "bleu4", "cider", "bertscore_f1")))
         print("    Cls 14  :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("cls_accuracy", "f1_macro", "f1_weighted", "precision_macro", "recall_macro")))
         print("    Cls Bin :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k.startswith("binary")))
         print(f"    Unknown rate: {ft_metrics.get('unknown_rate', 'N/A')}")
@@ -543,7 +555,7 @@ def main():
             zs_metrics = _compute_caption_metrics(zs_preds, gts)
             zs_metrics.update(_compute_cls_metrics([r["zeroshot_class"] for r in clip_results], gt_classes))
             print("  Zero-shot   :")
-            print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k in ("bleu4", "rougeL", "bertscore_f1")))
+            print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k in ("rougeL", "bleu4", "cider", "bertscore_f1")))
             print("    Cls 14  :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k in ("cls_accuracy", "f1_macro", "f1_weighted", "precision_macro", "recall_macro")))
             print("    Cls Bin :", "  ".join(f"{k}={v:.4f}" for k, v in zs_metrics.items() if k.startswith("binary")))
             print(f"    Unknown rate: {zs_metrics.get('unknown_rate', 'N/A')}")
