@@ -18,7 +18,14 @@ from datetime import datetime
 MODEL_ID      = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
 DATA_ROOT     = os.environ.get("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 RUN_TAG       = datetime.now().strftime("%Y%m%d-%H%M%S")
-OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / f"smolvlm2-2b-lora-{RUN_TAG}")
+_EXTRA = sys.argv[1:]  # passthrough CLI args (e.g. --resume <ckpt>)
+OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / f"smolvlm2-2b-lora-{{RUN_TAG}}")
+
+# Resume: if --resume <ckpt> passed, continue in that checkpoint's run folder
+if "--resume" in _EXTRA:
+    _ri = _EXTRA.index("--resume")
+    if _ri + 1 < len(_EXTRA):
+        OUTPUT_DIR = str(Path(_EXTRA[_ri + 1]).resolve().parent)
 
 MLFLOW_URI        = "https://mlflow-geoai.stelarea.com/"
 MLFLOW_EXPERIMENT = "vlm-surveillance"
@@ -72,6 +79,7 @@ sys.argv = [
     "--output",             OUTPUT_DIR,
     *(["--no-grad-checkpoint"] if NO_GRAD_CKPT else []),
 ]
+sys.argv += _EXTRA  # forward passthrough CLI args (--resume, etc.)
 
 # ---------------------------------------------------------------------------
 # Run
