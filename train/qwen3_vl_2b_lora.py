@@ -35,9 +35,9 @@ LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base 
 EPOCHS        = 3
 LR            = 2e-4   # sqrt-scaled for batch=48 (was 1e-4 @ batch=8)
 VISION_LR     = 1e-4   # sqrt-scaled vision LR
-BATCH         = 48   # B200 179GB — fill VRAM; eff batch = 48
-GRAD_ACCUM    = 1    # no accumulation needed at this batch size
-MAX_FRAMES    = 64   # more temporal coverage on B200
+BATCH         = 24   # OOM at 48 — halved
+GRAD_ACCUM    = 2    # eff batch = 48
+MAX_FRAMES    = 48   # reduced from 64
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
 CLASS_TOKEN_W = 5.0
@@ -50,6 +50,7 @@ NO_GRAD_CKPT  = True  # disabled — 36% VRAM has headroom; faster ~20-30%
 # Must be set before train_full is imported (module-level constants read at import time)
 os.environ["MLFLOW_URI"]        = MLFLOW_URI
 os.environ["MLFLOW_EXPERIMENT"] = MLFLOW_EXPERIMENT
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # ---------------------------------------------------------------------------
 # Inject config as argv so train_full.main() picks it up
