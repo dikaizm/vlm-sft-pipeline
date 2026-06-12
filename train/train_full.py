@@ -57,8 +57,8 @@ _PIPELINE_ROOT = Path(__file__).parent.parent   # vlm-sft-pipeline/
 
 _DATA_ROOT    = os.environ.get("DATA_ROOT", str(_PIPELINE_ROOT / "data"))
 _VIDEO_ROOT   = f"{_DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-_TRAIN_JSON   = f"{_DATA_ROOT}/classified/UCFCrime_Train_deepseek_v4_pro.json"
-_VAL_JSON     = f"{_DATA_ROOT}/classified/UCFCrime_Val_deepseek_v4_pro.json"
+_TRAIN_JSON   = f"{_DATA_ROOT}/classified/UCFCrime_Train_kimi_k2_6_ctx.json"
+_VAL_JSON     = f"{_DATA_ROOT}/classified/UCFCrime_Val_kimi_k2_6_ctx.json"
 _OUTPUT_DIR   = os.environ.get("OUTPUT_DIR", str(_PIPELINE_ROOT / "output" / "smolvlm2-full-sft"))
 _MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 
@@ -880,8 +880,8 @@ def main():
     FRAME_JITTER       = args.frame_jitter
 
     video_root = f"{args.data_root}/UCF_Crimes/UCF_Crimes/Videos"
-    train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_deepseek_v4_pro.json"
-    val_json   = args.val_json   or f"{args.data_root}/classified/UCFCrime_Val_deepseek_v4_pro.json"
+    train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_kimi_k2_6_ctx.json"
+    val_json   = args.val_json   or f"{args.data_root}/classified/UCFCrime_Val_kimi_k2_6_ctx.json"
 
     if args.lora:
         mode_tag = "lora"
