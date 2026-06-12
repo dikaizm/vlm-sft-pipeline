@@ -35,9 +35,9 @@ LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base 
 EPOCHS        = 3
 LR            = 2e-4   # sqrt-scaled for batch=48 (was 1e-4 @ batch=8)
 VISION_LR     = 1e-4   # sqrt-scaled vision LR
-BATCH         = 24   # OOM at 48 — halved
-GRAD_ACCUM    = 2    # eff batch = 48
-MAX_FRAMES    = 48   # reduced from 64
+BATCH         = 32
+GRAD_ACCUM    = 2    # eff batch = 64
+MAX_FRAMES    = 48
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
 CLASS_TOKEN_W = 5.0
@@ -45,7 +45,7 @@ KL_COEF       = 0.5
 FRAME_JITTER  = 1.5
 EVAL_STEPS    = 50
 SAVE_STEPS    = 50
-NO_GRAD_CKPT  = True  # disabled — 36% VRAM has headroom; faster ~20-30%
+NO_GRAD_CKPT  = False  # re-enabled — KL double-forward is memory heavy
 
 # Must be set before train_full is imported (module-level constants read at import time)
 os.environ["MLFLOW_URI"]        = MLFLOW_URI
