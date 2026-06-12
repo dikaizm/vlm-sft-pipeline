@@ -33,10 +33,10 @@ MLFLOW_EXPERIMENT = "vlm-surveillance"
 # 96GB VRAM — big batch, more frames, higher LoRA rank, no grad checkpointing
 LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base (alpha=2r=32)
 EPOCHS        = 3
-LR            = 2e-4   # sqrt-scaled for batch=48 (was 1e-4 @ batch=8)
-VISION_LR     = 1e-4   # sqrt-scaled vision LR
-BATCH         = 16
-GRAD_ACCUM    = 4    # eff batch = 64
+LR            = 1e-4
+VISION_LR     = 5e-5
+BATCH         = 8    # match DeepSeek run for fair comparison
+GRAD_ACCUM    = 4    # eff batch = 32
 MAX_FRAMES    = 32
 MAX_NORMAL    = 1500
 SAMPLER       = "sqrt"
