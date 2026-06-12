@@ -19,7 +19,7 @@ MODEL_ID      = "Qwen/Qwen3-VL-2B-Instruct"
 DATA_ROOT     = os.environ.get("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 RUN_TAG       = datetime.now().strftime("%Y%m%d-%H%M%S")
 _EXTRA = sys.argv[1:]  # passthrough CLI args (e.g. --resume <ckpt>)
-OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / f"qwen3-vl-2b-lora-{{RUN_TAG}}")
+OUTPUT_DIR    = str(Path(__file__).parent.parent / "output" / f"qwen3-vl-2b-lora-{RUN_TAG}")
 
 # Resume: if --resume <ckpt> passed, continue in that checkpoint's run folder
 if "--resume" in _EXTRA:
