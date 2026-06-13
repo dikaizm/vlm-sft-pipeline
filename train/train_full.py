@@ -57,8 +57,8 @@ _PIPELINE_ROOT = Path(__file__).parent.parent   # vlm-sft-pipeline/
 
 _DATA_ROOT    = os.environ.get("DATA_ROOT", str(_PIPELINE_ROOT / "data"))
 _VIDEO_ROOT   = f"{_DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-_TRAIN_JSON   = f"{_DATA_ROOT}/classified/UCFCrime_Train_kimi_k2_6_ctx.json"
-_VAL_JSON     = f"{_DATA_ROOT}/classified/UCFCrime_Val_kimi_k2_6_ctx.json"
+_TRAIN_JSON   = f"{_DATA_ROOT}/classified/UCFCrime_Train_kimi_k2_6_ctx_2fps.json"
+_VAL_JSON     = f"{_DATA_ROOT}/classified/UCFCrime_Val_kimi_k2_6_ctx_2fps.json"
 _OUTPUT_DIR   = os.environ.get("OUTPUT_DIR", str(_PIPELINE_ROOT / "output" / "smolvlm2-full-sft"))
 _MODEL_ID     = os.environ.get("MODEL_ID",   "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 
@@ -406,14 +406,29 @@ def _load_samples(json_path: str, video_root: str, max_samples: int, max_normal:
         f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
     )
 
-    # Undersample Normal class if cap requested
+    # Undersample Normal class if cap requested — ratio-preserving:
+    # maintain proportion of Normal-from-normal-parent vs Normal-from-crime-parent
     if max_normal > 0:
         normal_items = [it for it in items if it["class"] == "Normal"]
         other_items  = [it for it in items if it["class"] != "Normal"]
         n_before = len(normal_items)
         if n_before > max_normal:
-            normal_items = normal_items[:max_normal]
-            log.info(f"  Undersampled Normal: {n_before} → {len(normal_items)} sub-clips")
+            # split by parent-video origin (Normal video vs crime video transitional scene)
+            def _is_normal_parent(it):
+                return "ormal" in os.path.basename(it["video_path"])
+            norm_from_normal  = [it for it in normal_items if _is_normal_parent(it)]
+            norm_from_crime   = [it for it in normal_items if not _is_normal_parent(it)]
+            total_normal = len(norm_from_normal) + len(norm_from_crime)
+            if total_normal > 0:
+                n_keep_nn = int(max_normal * len(norm_from_normal) / total_normal)
+                n_keep_nc = max_normal - n_keep_nn
+            else:
+                n_keep_nn, n_keep_nc = max_normal, 0
+            normal_items = norm_from_normal[:n_keep_nn] + norm_from_crime[:n_keep_nc]
+            log.info(
+                f"  Undersampled Normal (ratio-preserving): {n_before} → {len(normal_items)} "
+                f"({n_keep_nn} normal-parent + {n_keep_nc} crime-parent)"
+            )
         items = normal_items + other_items
         random.shuffle(items)
 
@@ -880,8 +895,8 @@ def main():
     FRAME_JITTER       = args.frame_jitter
 
     video_root = f"{args.data_root}/UCF_Crimes/UCF_Crimes/Videos"
-    train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_kimi_k2_6_ctx.json"
-    val_json   = args.val_json   or f"{args.data_root}/classified/UCFCrime_Val_kimi_k2_6_ctx.json"
+    train_json = args.train_json or f"{args.data_root}/classified/UCFCrime_Train_kimi_k2_6_ctx_2fps.json"
+    val_json   = args.val_json   or f"{args.data_root}/classified/UCFCrime_Val_kimi_k2_6_ctx_2fps.json"
 
     if args.lora:
         mode_tag = "lora"
@@ -1053,9 +1068,20 @@ def main():
                 normal = [x for x in merged if x.get("class") == "Normal"]
                 other  = [x for x in merged if x.get("class") != "Normal"]
                 random.seed(SEED); random.shuffle(normal)
-                merged = other + normal[:args.max_normal]
+                if len(normal) > args.max_normal:
+                    # ratio-preserving: keep proportion of normal-parent vs crime-parent Normal
+                    def _is_normal_parent(it):
+                        return "ormal" in os.path.basename(it["video_path"])
+                    nn = [x for x in normal if _is_normal_parent(x)]
+                    nc = [x for x in normal if not _is_normal_parent(x)]
+                    tot = len(nn) + len(nc)
+                    keep_nn = int(args.max_normal * len(nn) / tot) if tot else args.max_normal
+                    keep_nc = args.max_normal - keep_nn
+                    normal  = nn[:keep_nn] + nc[:keep_nc]
+                    logger.info(f"  Union Normal capped (ratio-preserving) to {len(normal)} "
+                                f"({keep_nn} normal-parent + {keep_nc} crime-parent)")
+                merged = other + normal
                 random.shuffle(merged)
-                logger.info(f"  Union Normal capped to {min(len(normal), args.max_normal)}")
             if args.max_train != -1:
                 merged = merged[:args.max_train]
             train_ds = Dataset.from_list(merged)

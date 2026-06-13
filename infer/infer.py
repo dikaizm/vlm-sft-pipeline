@@ -165,13 +165,30 @@ def _compute_cls_metrics(pred_classes: list[str], gt_classes: list[str]) -> dict
 
     return metrics
 
+
+def _print_per_class(preds: list[str], gts: list[str], header: str = "Per-class") -> None:
+    classes = sorted(set(gts) - {"Unknown"})
+    print(f"\n  {header}:")
+    print(f"    {'Class':<18} {'GT':>5} {'TP':>5} {'Prec':>7} {'Rec':>7} {'F1':>7}")
+    print(f"    {'-'*52}")
+    for cls in classes:
+        gt_pos  = [i for i, g in enumerate(gts)   if g == cls]
+        tp      = sum(1 for i in gt_pos if preds[i] == cls)
+        fp      = sum(1 for i, p in enumerate(preds) if p == cls and gts[i] != cls)
+        fn      = len(gt_pos) - tp
+        prec    = tp / (tp + fp) if tp + fp else 0
+        rec     = tp / (tp + fn) if tp + fn else 0
+        f1      = 2 * prec * rec / (prec + rec) if prec + rec else 0
+        print(f"    {cls:<18} {len(gt_pos):>5} {tp:>5} {prec:>7.3f} {rec:>7.3f} {f1:>7.3f}")
+
+
 # ---------------------------------------------------------------------------
 # Config  (all overridable via .env or CLI flags)
 # ---------------------------------------------------------------------------
 
 DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
 VIDEO_ROOT    = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/classified/UCFCrime_Test_deepseek_v4_pro.json")
+TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/classified/UCFCrime_Test_kimi_k2_6_ctx_2fps.json")
 
 MODEL_ID      = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-500m-small-sft")
@@ -561,12 +578,14 @@ def main():
 
         ft_preds   = [r["finetuned"] for r in clip_results]
         ft_metrics = _compute_caption_metrics(ft_preds, gts)
-        ft_metrics.update(_compute_cls_metrics([r["finetuned_class"] for r in clip_results], gt_classes))
+        ft_pred_classes = [r["finetuned_class"] for r in clip_results]
+        ft_metrics.update(_compute_cls_metrics(ft_pred_classes, gt_classes))
         print("  Fine-tuned  :")
         print("    Caption :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("rougeL", "bleu4", "cider", "bertscore_f1")))
         print("    Cls 14  :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k in ("cls_accuracy", "f1_macro", "f1_weighted", "precision_macro", "recall_macro")))
         print("    Cls Bin :", "  ".join(f"{k}={v:.4f}" for k, v in ft_metrics.items() if k.startswith("binary")))
         print(f"    Unknown rate: {ft_metrics.get('unknown_rate', 'N/A')}")
+        _print_per_class(ft_pred_classes, gt_classes, "  Fine-tuned per-class")
 
         if "zeroshot" in clip_results[0]:
             zs_preds   = [r["zeroshot"] for r in clip_results]
