@@ -35,8 +35,8 @@ LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base 
 EPOCHS        = 2
 LR            = 1e-4
 VISION_LR     = 5e-5
-BATCH         = 8    # match DeepSeek run for fair comparison
-GRAD_ACCUM    = 4    # eff batch = 32
+BATCH         = 4    # H100 80GB + KL double-forward — eff batch held at 32
+GRAD_ACCUM    = 8    # eff batch = 32
 MAX_FRAMES    = 32
 MAX_NORMAL    = 5000  # caps pure-normal only (transitional all kept); Normal ~31% eff w/ sqrt
 SAMPLER       = "sqrt"
