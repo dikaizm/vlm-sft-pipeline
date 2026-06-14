@@ -79,6 +79,7 @@ sys.argv = [
     "--save-steps",         str(SAVE_STEPS),
     "--data-root",          DATA_ROOT,
     "--output",             OUTPUT_DIR,
+    "--frame-cache",        str(Path(__file__).parent.parent / "frame_cache_24"),
     *(["--no-grad-checkpoint"] if NO_GRAD_CKPT else []),
 ]
 sys.argv += _EXTRA  # forward passthrough CLI args (--resume, etc.)
