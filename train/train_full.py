@@ -570,6 +570,7 @@ def _make_video_metadata(start: float, end: float, n_frames: int) -> VideoMetada
 
 
 FRAME_JITTER = 0.0  # set from CLI; >0 enables temporal start jitter (seconds, train only)
+JITTER_GRID  = 0.5  # snap jitter to this grid (s) so cached clips are reusable across runs
 
 
 def _is_image_mode_processor(processor) -> bool:
@@ -646,9 +647,9 @@ def collate_fn(batch: list[dict], processor, is_train: bool = True) -> dict:
     for sample in batch:
         start, end = sample["start"], sample["end"]
         # Temporal frame jitter: shift start by uniform U(-J, +J), keep duration constant.
-        # Cache misses on jittered samples — pay re-extraction cost for temporal augmentation.
+        # Snap to JITTER_GRID so jittered clips hit the cache across runs.
         if is_train and FRAME_JITTER > 0:
-            shift = random.uniform(-FRAME_JITTER, FRAME_JITTER)
+            shift = round(random.uniform(-FRAME_JITTER, FRAME_JITTER) / JITTER_GRID) * JITTER_GRID
             new_start = max(0.0, start + shift)
             new_end   = new_start + (end - start)
             start, end = new_start, new_end
@@ -713,7 +714,7 @@ def _collate_fn_image_mode(batch: list[dict], processor, is_train: bool = True) 
     for sample in batch:
         start, end = sample["start"], sample["end"]
         if is_train and FRAME_JITTER > 0:
-            shift = random.uniform(-FRAME_JITTER, FRAME_JITTER)
+            shift = round(random.uniform(-FRAME_JITTER, FRAME_JITTER) / JITTER_GRID) * JITTER_GRID
             new_start = max(0.0, start + shift)
             new_end   = new_start + (end - start)
             start, end = new_start, new_end
