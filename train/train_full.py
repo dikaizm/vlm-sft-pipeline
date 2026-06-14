@@ -1141,7 +1141,7 @@ def main():
             eval_strategy="steps" if args.eval_during_training else "no",
             eval_steps=eval_steps if args.eval_during_training else None,
             load_best_model_at_end=False,
-            save_total_limit=3,
+            save_total_limit=None,   # keep ALL checkpoints for post-hoc eval-selection
             remove_unused_columns=False,
             dataloader_num_workers=8,
             dataloader_prefetch_factor=2,
