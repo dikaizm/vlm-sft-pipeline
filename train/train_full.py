@@ -350,12 +350,15 @@ _VIDEO_INDEX: dict[str, str] = {}
 
 
 def _resolve_video_path(video_id: str, video_root: str) -> str | None:
-    """Find <video_id>.mp4 anywhere under video_root.
-
-    Crime videos sit in <Category>/, but normal videos live in
-    Training_Normal_Videos_Anomaly/ etc. — which don't match
-    _category_from_id(). Build a basename→path index once, then look up.
+    """Find <video_id>.mp4. Fast path: direct category dir (all crime videos).
+    Fallback: one-time os.walk index (normal videos live in
+    Training_Normal_Videos_Anomaly/ etc. — don't match _category_from_id()).
     """
+    # fast path — no walk for crime videos
+    direct = os.path.join(video_root, _category_from_id(video_id), f"{video_id}.mp4")
+    if os.path.isfile(direct):
+        return direct
+    # fallback — build index once, only triggered by non-matching (normal) videos
     global _VIDEO_INDEX
     if not _VIDEO_INDEX:
         for root, _dirs, files in os.walk(video_root):
@@ -992,8 +995,11 @@ def main():
         logging.getLogger("transformers").setLevel(logging.ERROR)
 
         # --- Model & processor ---
-        logger.info("Loading model and processor...")
+        import time as _time
+        _t = _time.time()
+        logger.info(f"[phase] Loading processor: {args.model} ...")
         processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
+        logger.info(f"[phase] Processor loaded in {_time.time()-_t:.1f}s")
 
         # Attention impl: explicit override, else flash_attention_2 > sdpa > eager.
         # Some vision towers (e.g. LFM2-VL's Siglip2VisionModel) lack FA2 support —
@@ -1016,6 +1022,8 @@ def main():
         _use_accel = torch.cuda.is_available() or (torch.backends.mps.is_available() and not args.force_cpu)
         _dtype = torch.bfloat16 if _use_accel else torch.float32
         _device_map = "auto" if torch.cuda.is_available() else None
+        _t = _time.time()
+        logger.info(f"[phase] Loading model weights: {args.model} (dtype={_dtype}, attn={attn_impl}) ...")
         model = AutoModelForImageTextToText.from_pretrained(
             args.model,
             dtype=_dtype,
@@ -1023,6 +1031,7 @@ def main():
             device_map=_device_map,
             trust_remote_code=args.trust_remote_code,
         )
+        logger.info(f"[phase] Model weights loaded in {_time.time()-_t:.1f}s")
         if args.force_cpu:
             model = model.to("cpu")
 
@@ -1065,7 +1074,8 @@ def main():
             pass
 
         # --- Dataset ---
-        logger.info("Building datasets...")
+        _t = _time.time()
+        logger.info(f"[phase] Building datasets (train={train_json}, video_root={video_root}) ...")
         if args.fold_val:
             # Fold validation split into training to boost data-starved classes
             # (e.g. Explosion: ~4 train clips + ~32 val clips). Eval is disabled
@@ -1101,6 +1111,8 @@ def main():
         else:
             train_ds = build_dataset(train_json, video_root, args.max_train, logger, max_normal=args.max_normal)
         val_ds   = build_dataset(val_json,   video_root, args.max_val,   logger)
+        logger.info(f"[phase] Datasets built in {_time.time()-_t:.1f}s "
+                    f"(train={len(train_ds)}, val={len(val_ds)})")
 
         # Eval every ~20% of training steps, save best checkpoint
         steps_per_epoch = max(1, len(train_ds) // (args.batch * args.grad_accum))

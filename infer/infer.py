@@ -248,8 +248,11 @@ _VIDEO_INDEX: dict[str, str] = {}
 
 
 def _resolve_video_path(video_id: str) -> str | None:
-    """Find <video_id>.mp4 anywhere under VIDEO_ROOT (normal videos live in
-    Training_Normal_Videos_Anomaly/ etc. — don't match _category_from_id)."""
+    """Find <video_id>.mp4. Fast path: direct category dir. Fallback: one-time
+    os.walk index (normal videos don't match _category_from_id())."""
+    direct = os.path.join(VIDEO_ROOT, _category_from_id(video_id), f"{video_id}.mp4")
+    if os.path.isfile(direct):
+        return direct
     global _VIDEO_INDEX
     if not _VIDEO_INDEX:
         for root, _dirs, files in os.walk(VIDEO_ROOT):
