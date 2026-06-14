@@ -33,10 +33,10 @@ MLFLOW_EXPERIMENT = "vlm-surveillance"
 # 96GB VRAM — big batch, more frames, higher LoRA rank, no grad checkpointing
 LORA_RANK     = 16   # tiny dataset -> small adapter regularizes + retains base (alpha=2r=32)
 EPOCHS        = 2
-LR            = 1e-4
-VISION_LR     = 5e-5
-BATCH         = 8
-GRAD_ACCUM    = 4    # eff batch = 32
+LR            = 9e-5   # sqrt-scaled for eff batch 24 (was 1e-4 @ eff 32)
+VISION_LR     = 4.5e-5
+BATCH         = 12   # H200 141GB
+GRAD_ACCUM    = 2    # eff batch = 24
 MAX_FRAMES    = 32
 MAX_NORMAL    = 1500  # caps pure-normal only (transitional all kept); Normal ~28% eff w/ sqrt
 SAMPLER       = "sqrt"
@@ -45,7 +45,7 @@ KL_COEF       = 0.5
 FRAME_JITTER  = 1.5
 EVAL_STEPS    = 50
 SAVE_STEPS    = 50
-NO_GRAD_CKPT  = False  # re-enabled — KL double-forward is memory heavy
+NO_GRAD_CKPT  = False
 
 # Must be set before train_full is imported (module-level constants read at import time)
 os.environ["MLFLOW_URI"]        = MLFLOW_URI

@@ -81,7 +81,7 @@ PROMPT = (
 FRAMES_PER_SEC = 4      # 4 frames per second of clip duration
 MAX_FRAMES     = 48     # frames per sub-clip (48 × 81 tokens = 3888 visual tokens for 2.2B; 81 tokens/frame vs 64 for 500M)
 MIN_FRAMES     = 2      # floor for very short clips
-MAX_LENGTH     = 8192   # 3888 visual + ~512 text; 2.2B supports 8192 max_position_embeddings
+MAX_LENGTH     = 4096   # actual peak ~2900 tokens (32fr×81tok + text); 4096 covers all samples
 SEG_DURATION   = MAX_FRAMES / FRAMES_PER_SEC  # 12s — matches dataset median annotation duration (10.9s)
 SEG_STRIDE     = SEG_DURATION * 0.75          # 9s stride = 25% overlap between sub-clips
 SEED           = 42
