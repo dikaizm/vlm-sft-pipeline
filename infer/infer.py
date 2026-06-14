@@ -244,6 +244,21 @@ def _category_from_id(video_id: str) -> str:
     return re.sub(r"\d+_x264$", "", video_id)
 
 
+_VIDEO_INDEX: dict[str, str] = {}
+
+
+def _resolve_video_path(video_id: str) -> str | None:
+    """Find <video_id>.mp4 anywhere under VIDEO_ROOT (normal videos live in
+    Training_Normal_Videos_Anomaly/ etc. — don't match _category_from_id)."""
+    global _VIDEO_INDEX
+    if not _VIDEO_INDEX:
+        for root, _dirs, files in os.walk(VIDEO_ROOT):
+            for fn in files:
+                if fn.endswith(".mp4") and not fn.startswith("._"):
+                    _VIDEO_INDEX[fn[:-4]] = os.path.join(root, fn)
+    return _VIDEO_INDEX.get(video_id)
+
+
 def _load_anomaly_test_ids() -> set[str]:
     """Load official Anomaly_Test.txt split — returns set of video_ids without extension."""
     if not os.path.isfile(ANOMALY_TEST_SPLIT):
@@ -272,9 +287,8 @@ def load_test_samples(n: int, crime_ratio: float = 0.8) -> list[dict]:
         if allowed_ids and video_id not in allowed_ids:
             skipped_leakage += 1
             continue
-        category   = _category_from_id(video_id)
-        video_path = os.path.join(VIDEO_ROOT, category, f"{video_id}.mp4")
-        if not os.path.isfile(video_path):
+        video_path = _resolve_video_path(video_id)
+        if video_path is None:
             continue
         for (start, end), sent_entry in zip(ann["timestamps"], ann["sentences"]):
             if end <= start:

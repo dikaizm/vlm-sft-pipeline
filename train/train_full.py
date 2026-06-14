@@ -346,6 +346,25 @@ def _category_from_id(video_id: str) -> str:
     return re.sub(r"\d+_x264$", "", video_id)
 
 
+_VIDEO_INDEX: dict[str, str] = {}
+
+
+def _resolve_video_path(video_id: str, video_root: str) -> str | None:
+    """Find <video_id>.mp4 anywhere under video_root.
+
+    Crime videos sit in <Category>/, but normal videos live in
+    Training_Normal_Videos_Anomaly/ etc. — which don't match
+    _category_from_id(). Build a basename→path index once, then look up.
+    """
+    global _VIDEO_INDEX
+    if not _VIDEO_INDEX:
+        for root, _dirs, files in os.walk(video_root):
+            for fn in files:
+                if fn.endswith(".mp4") and not fn.startswith("._"):
+                    _VIDEO_INDEX[fn[:-4]] = os.path.join(root, fn)
+    return _VIDEO_INDEX.get(video_id)
+
+
 def _segment_clip(start: float, end: float, sentence: str,
                   video_path: str) -> list[dict]:
     """Split annotation clip into SEG_DURATION sub-clips, all sharing the GT sentence.
@@ -378,9 +397,8 @@ def _load_samples(json_path: str, video_root: str, max_samples: int, max_normal:
     skipped = 0
     n_clips = 0
     for video_id, ann in data.items():
-        category   = _category_from_id(video_id)
-        video_path = os.path.join(video_root, category, f"{video_id}.mp4")
-        if not os.path.isfile(video_path):
+        video_path = _resolve_video_path(video_id, video_root)
+        if video_path is None:
             skipped += 1
             continue
         for (start, end), sent_entry in zip(ann["timestamps"], ann["sentences"]):
@@ -406,31 +424,23 @@ def _load_samples(json_path: str, video_root: str, max_samples: int, max_normal:
         f"  {n_clips} annotations → {len(items)} sub-clips, {skipped} videos not found"
     )
 
-    # Undersample Normal class if cap requested — ratio-preserving:
-    # maintain proportion of Normal-from-normal-parent vs Normal-from-crime-parent
+    # Cap ONLY pure-normal-parent clips. Keep ALL crime-parent transitional
+    # Normals (hard negatives) + all crime clips.
     if max_normal > 0:
-        normal_items = [it for it in items if it["class"] == "Normal"]
+        def _is_normal_parent(it):
+            return "ormal" in os.path.basename(it["video_path"])
+        pure_normal  = [it for it in items if it["class"] == "Normal" and _is_normal_parent(it)]
+        transitional = [it for it in items if it["class"] == "Normal" and not _is_normal_parent(it)]
         other_items  = [it for it in items if it["class"] != "Normal"]
-        n_before = len(normal_items)
+        n_before = len(pure_normal)
         if n_before > max_normal:
-            # split by parent-video origin (Normal video vs crime video transitional scene)
-            def _is_normal_parent(it):
-                return "ormal" in os.path.basename(it["video_path"])
-            norm_from_normal  = [it for it in normal_items if _is_normal_parent(it)]
-            norm_from_crime   = [it for it in normal_items if not _is_normal_parent(it)]
-            total_normal = len(norm_from_normal) + len(norm_from_crime)
-            if total_normal > 0:
-                n_keep_nn = int(max_normal * len(norm_from_normal) / total_normal)
-                n_keep_nc = max_normal - n_keep_nn
-            else:
-                n_keep_nn, n_keep_nc = max_normal, 0
-            normal_items = norm_from_normal[:n_keep_nn] + norm_from_crime[:n_keep_nc]
-            log.info(
-                f"  Undersampled Normal (ratio-preserving): {n_before} → {len(normal_items)} "
-                f"({n_keep_nn} normal-parent + {n_keep_nc} crime-parent)"
-            )
-        items = normal_items + other_items
+            pure_normal = pure_normal[:max_normal]
+        items = other_items + pure_normal + transitional
         random.shuffle(items)
+        log.info(
+            f"  Pure-normal capped {n_before} → {len(pure_normal)}; "
+            f"transitional kept {len(transitional)} (all)"
+        )
 
     # Class distribution audit (post-filter)
     from collections import Counter as _Counter
@@ -1065,23 +1075,21 @@ def main():
             vl = _load_samples(val_json,   video_root, -1, max_normal=-1)
             merged = tr + vl
             if args.max_normal > 0:
-                normal = [x for x in merged if x.get("class") == "Normal"]
-                other  = [x for x in merged if x.get("class") != "Normal"]
-                random.seed(SEED); random.shuffle(normal)
-                if len(normal) > args.max_normal:
-                    # ratio-preserving: keep proportion of normal-parent vs crime-parent Normal
-                    def _is_normal_parent(it):
-                        return "ormal" in os.path.basename(it["video_path"])
-                    nn = [x for x in normal if _is_normal_parent(x)]
-                    nc = [x for x in normal if not _is_normal_parent(x)]
-                    tot = len(nn) + len(nc)
-                    keep_nn = int(args.max_normal * len(nn) / tot) if tot else args.max_normal
-                    keep_nc = args.max_normal - keep_nn
-                    normal  = nn[:keep_nn] + nc[:keep_nc]
-                    logger.info(f"  Union Normal capped (ratio-preserving) to {len(normal)} "
-                                f"({keep_nn} normal-parent + {keep_nc} crime-parent)")
-                merged = other + normal
+                # Cap ONLY pure-normal-parent clips. Keep ALL crime-parent
+                # transitional Normals (valuable hard negatives) + all crime.
+                def _is_normal_parent(it):
+                    return "ormal" in os.path.basename(it["video_path"])
+                pure_normal  = [x for x in merged if x.get("class") == "Normal" and _is_normal_parent(x)]
+                transitional = [x for x in merged if x.get("class") == "Normal" and not _is_normal_parent(x)]
+                other        = [x for x in merged if x.get("class") != "Normal"]
+                random.seed(SEED); random.shuffle(pure_normal)
+                n_before = len(pure_normal)
+                if n_before > args.max_normal:
+                    pure_normal = pure_normal[:args.max_normal]
+                merged = other + pure_normal + transitional
                 random.shuffle(merged)
+                logger.info(f"  Pure-normal capped {n_before} → {len(pure_normal)}; "
+                            f"transitional kept {len(transitional)} (all)")
             if args.max_train != -1:
                 merged = merged[:args.max_train]
             train_ds = Dataset.from_list(merged)
