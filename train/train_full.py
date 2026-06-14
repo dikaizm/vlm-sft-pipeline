@@ -255,6 +255,20 @@ class SurveillanceTrainer(Trainer):
         else:
             raise ValueError(f"Unknown sampler_mode: {self.sampler_mode}")
 
+        # Log EFFECTIVE class exposure (what the model actually trains on after
+        # weighted draws) — differs from raw on-disk distribution.
+        log = logging.getLogger("train_full")
+        # class total weight = count × per-sample-weight → sqrt: √count, balanced: 1
+        if self.sampler_mode == "sqrt":
+            per_class_w = {c: math.sqrt(counts[c]) for c in counts}
+        else:
+            per_class_w = {c: 1.0 for c in counts}
+        tot_w = sum(per_class_w.values())
+        log.info(f"  Effective sampling exposure ({self.sampler_mode}):")
+        for c in sorted(counts, key=lambda x: -per_class_w[x]):
+            log.info(f"    {c:18s} raw={100*counts[c]/len(classes):5.1f}%  "
+                     f"eff={100*per_class_w[c]/tot_w:5.1f}%")
+
         return WeightedRandomSampler(
             weights=weights,
             num_samples=len(ds),
