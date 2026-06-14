@@ -38,7 +38,7 @@ VISION_LR     = 5e-5
 BATCH         = 8
 GRAD_ACCUM    = 4    # eff batch = 32
 MAX_FRAMES    = 32
-MAX_NORMAL    = 5000  # caps pure-normal only (transitional all kept); Normal ~31% eff w/ sqrt
+MAX_NORMAL    = 1500  # caps pure-normal only (transitional all kept); Normal ~28% eff w/ sqrt
 SAMPLER       = "sqrt"
 CLASS_TOKEN_W = 5.0
 KL_COEF       = 0.5

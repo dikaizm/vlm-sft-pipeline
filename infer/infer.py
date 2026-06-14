@@ -278,7 +278,7 @@ def _load_anomaly_test_ids() -> set[str]:
     return ids
 
 
-def load_test_samples(n: int, crime_ratio: float = 0.8) -> list[dict]:
+def load_test_samples(n: int, crime_ratio: float = 0.8, sample_by_video: bool = False) -> list[dict]:
     with open(TEST_JSON) as f:
         data = json.load(f)
 
@@ -314,8 +314,14 @@ def load_test_samples(n: int, crime_ratio: float = 0.8) -> list[dict]:
     if skipped_leakage:
         print(f"  Filtered {skipped_leakage} videos present in training split (leakage prevention)")
 
-    crime_items  = [x for x in items if x["gt_class"] != "Normal" and x["gt_class"] != "Unknown"]
-    normal_items = [x for x in items if x["gt_class"] == "Normal"]
+    if sample_by_video:
+        # Use parent video class for sampling — crime video clips go to crime pool
+        # regardless of Kimi per-sentence label. Gives balanced crime-ratio.
+        crime_items  = [x for x in items if "ormal" not in x["video_id"]]
+        normal_items = [x for x in items if "ormal" in x["video_id"]]
+    else:
+        crime_items  = [x for x in items if x["gt_class"] != "Normal" and x["gt_class"] != "Unknown"]
+        normal_items = [x for x in items if x["gt_class"] == "Normal"]
 
     random.shuffle(crime_items)
     random.shuffle(normal_items)
@@ -441,6 +447,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n",           type=int, default=5,            help="Number of test clips")
     parser.add_argument("--crime-ratio", type=float, default=0.8,        help="Fraction of clips from crime classes (default: 0.8)")
+    parser.add_argument("--sample-by-video", action="store_true",       help="Use parent video class for crime/normal sampling (not Kimi sentence label); gives balanced crime-ratio with fine-grained GT")
     parser.add_argument("--context-pad", type=float, default=5.0,        help="Seconds to pad before/after annotation (default: 5.0)")
     parser.add_argument("--finetuned",   default=FINETUNED_DIR,          help="Fine-tuned model dir")
     parser.add_argument("--no-zeroshot", action="store_true",            help="Skip zero-shot model")
@@ -532,7 +539,7 @@ def main():
 
     # --- Load test samples ---
     print(f"\nLoading {args.n} test samples ...")
-    samples = load_test_samples(args.n, crime_ratio=args.crime_ratio)
+    samples = load_test_samples(args.n, crime_ratio=args.crime_ratio, sample_by_video=args.sample_by_video)
     if not samples:
         sys.exit("No test samples found — check TEST_JSON path and VIDEO_ROOT.")
     print(f"  Loaded {len(samples)} samples\n")
