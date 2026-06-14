@@ -1,0 +1,52 @@
+# Conda environment for vlm-sft-pipeline (Qwen3-VL / LFM2-VL LoRA on UCF-Crime).
+# CUDA 12.8 build — for A100/H100/B200 (Blackwell needs cu128 + torch>=2.7).
+#
+# Setup:
+#   conda env create -f environment.yml
+#   conda activate vlm
+#   pip install flash-attn --no-build-isolation   # optional; sdpa fallback if skipped
+#
+name: vlm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip>=24.0
+  - pip:
+      # --- PyTorch (CUDA 12.8) ---
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch>=2.7.0
+      - torchvision
+
+      # --- core training ---
+      - transformers>=4.48.0
+      - trl>=0.12.0
+      - accelerate>=0.26.0
+      - bitsandbytes>=0.42.0
+      - peft>=0.9.0
+      - datasets>=2.18.0
+
+      # --- video / image ---
+      - av>=12.0.0
+      - Pillow>=10.0.0
+      - opencv-python>=4.8.0
+      - numpy>=1.24.0
+      - scipy>=1.10.0
+
+      # --- eval metrics ---
+      - rouge-score>=0.1.2
+      - sacrebleu>=2.3.0
+      - bert-score>=0.3.13
+      - pycocoevalcap>=1.2
+      - num2words>=0.5.13
+
+      # --- tracking / data fetch ---
+      - mlflow>=2.10.0
+      - python-dotenv>=1.0.0
+      - kaggle>=1.6.0
+
+      # --- Google Drive download (fetch/download_gdrive.py, upload_model.py) ---
+      - google-api-python-client
+      - google-auth
+      - google-auth-oauthlib
+      - google-auth-httplib2
