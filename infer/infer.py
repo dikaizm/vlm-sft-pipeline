@@ -188,7 +188,7 @@ def _print_per_class(preds: list[str], gts: list[str], header: str = "Per-class"
 
 DATA_ROOT     = os.environ.get("DATA_ROOT", "/Volumes/T7/research-vlm/data")
 VIDEO_ROOT    = f"{DATA_ROOT}/UCF_Crimes/UCF_Crimes/Videos"
-TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/classified/UCFCrime_Test_kimi_k2_6_ctx_2fps.json")
+TEST_JSON     = os.environ.get("TEST_JSON", f"{DATA_ROOT}/classified/UCFCrime_Test_voted.json")
 
 MODEL_ID      = os.environ.get("MODEL_ID",     "HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
 FINETUNED_DIR = os.environ.get("FINETUNED_DIR", "./output/smolvlm2-500m-small-sft")
